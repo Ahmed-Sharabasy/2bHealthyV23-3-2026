@@ -102,7 +102,7 @@ const createSendToken = (user, statusCode, res) => {
 
 // ═════════════════════════════════════════════════════════════
 // todo now is signup  2/3/2026 // Done
-export const signUp = async (req, res) => {
+export const signUp = async (req, res, next) => {
   const { name, email, password, phoneNumber, gender, dateOfBirth, language } =
     req.body;
 
