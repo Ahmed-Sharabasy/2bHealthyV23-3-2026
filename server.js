@@ -60,6 +60,9 @@ import AppError from "./src/utils/AppError.js";
 
 const app = express();
 
+// ── Trust first proxy (Vercel) for correct client IP ────────
+app.set("trust proxy", 1);
+
 // ── MongoDB Connection ──────────────────────────────────────
 let mongoConnected = false;
 
