@@ -14,6 +14,9 @@ router.route("/search").get(foodController.searchRecipesByIngredients);
 // test route
 router.route("/searchIngredient").get(foodController.searchIngredient);
 
-router.route("/generateRandomMealPlan").get(foodController.generateRandomMealPlan);
+//?Warning : to many case limit in foodApi try not use it
+router
+  .route("/generateRandomMealPlan")
+  .get(foodController.generateRandomMealPlan);
 
 export default router;

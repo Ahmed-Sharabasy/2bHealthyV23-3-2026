@@ -55,6 +55,11 @@ export const getFoodNutritionWithImage = async (req, res) => {
     `${BASE_URL}/recipes/complexSearch?apiKey=${API_KEY}&query=${foodName}&addRecipeNutrition=true&number=1`,
   );
   const data = await response.json();
+
+  if (!data.results || data.results.length === 0) {
+    return res.status(404).json({ message: "Food not found" });
+  }
+
   const item = data.results[0];
 
   res.json({
@@ -79,6 +84,11 @@ export const searchIngredient = async (req, res) => {
     `${BASE_URL}/food/ingredients/search?apiKey=${API_KEY}&query=${query}&number=1`,
   );
   const searchData = await searchResponse.json();
+
+  if (!searchData.results || searchData.results.length === 0) {
+    return res.status(404).json({ message: "Ingredient not found" });
+  }
+
   const ingredient = searchData.results[0];
 
   // Step 2: get full info with nutrition
