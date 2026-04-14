@@ -63,6 +63,54 @@ const globalErrorMiddleware = (err, req, res, next) => {
     });
   }
 
+  // ── Meal-specific errors ─────────────────────────────────
+
+  // Invalid meal ID format (not a valid idMeal or ObjectId)
+  if (
+    err.name === "CastError" &&
+    err.path === "idMeal"
+  ) {
+    return res.status(400).json({
+      status: "fail",
+      message: `Invalid meal ID format: "${err.value}". Please provide a valid meal ID.`,
+    });
+  }
+
+  // Meal not found (404 from FoodService)
+  if (
+    err.isOperational &&
+    err.statusCode === 404 &&
+    err.message.toLowerCase().includes("meal")
+  ) {
+    return res.status(404).json({
+      status: "fail",
+      message: err.message,
+    });
+  }
+
+  // Invalid nutrition filter values (NaN from parseFloat)
+  if (
+    err.name === "CastError" &&
+    (err.path || "").startsWith("nutrition.")
+  ) {
+    return res.status(400).json({
+      status: "fail",
+      message: `Invalid nutrition filter value for "${err.path}": "${err.value}". Please provide a valid number.`,
+    });
+  }
+
+  // Missing search query for meals
+  if (
+    err.isOperational &&
+    err.statusCode === 400 &&
+    err.message.toLowerCase().includes("search query")
+  ) {
+    return res.status(400).json({
+      status: "fail",
+      message: err.message,
+    });
+  }
+
   // ── Unknown / programming error — don't leak details ───
   console.error("💥 ERROR:", err);
   return res.status(500).json({

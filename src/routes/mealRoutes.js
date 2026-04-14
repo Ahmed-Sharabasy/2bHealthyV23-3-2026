@@ -1,44 +1,29 @@
 import { Router } from "express";
-import mealController from "../controllers/mealController.js";
 import {
-  createMealValidator,
-  generateMealPlanValidator,
-  logDailyMealValidator,
-} from "../validators/mealValidator.js";
-import authMiddleware from "../middlewares/authMiddleware.js";
-import validateRequest from "../middlewares/validateRequest.js";
+  getAllMeals,
+  getAllMealsNoPagination,
+  getMealById,
+  searchMeals,
+  getMealsByCategory,
+  getMealsByArea,
+  filterMealsByNutrition,
+  getMealIngredients,
+} from "../controllers/mealController.js";
 
 const router = Router();
 
-// ── All routes are protected ────────────────────────────────
-router.use(authMiddleware);
+// ── Specific routes (must come BEFORE /:id) ─────
+router.get("/all", getAllMealsNoPagination);
+router.get("/search", searchMeals);
+router.get("/filter", filterMealsByNutrition);
+router.get("/category/:category", getMealsByCategory);
+router.get("/area/:area", getMealsByArea);
 
-// Meals CRUD
-router.post(
-  "/",
-  createMealValidator,
-  validateRequest,
-  mealController.createMeal,
-);
-router.get("/", mealController.getMeals);
-router.get("/:id", mealController.getMealById);
+// ── Parameterized routes ────────────────────────
+router.get("/:id/ingredients", getMealIngredients);
+router.get("/:id", getMealById);
 
-// Meal plans
-router.post(
-  "/plan",
-  generateMealPlanValidator,
-  validateRequest,
-  mealController.generateMealPlan,
-);
-router.get("/plan/active", mealController.getMealPlan);
-
-// Daily meal logs
-router.post(
-  "/daily-log",
-  logDailyMealValidator,
-  validateRequest,
-  mealController.logDailyMeal,
-);
-router.get("/daily-log", mealController.getDailyMealLogs);
+// ── Root route ──────────────────────────────────
+router.get("/", getAllMeals);
 
 export default router;

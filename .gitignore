@@ -8,5 +8,8 @@ fullExerciseApi.exercises.json
 # ignore config.env
 config.env
 
+# ignore meals_with_nutrition.json
+meals_with_nutrition.json 
+
 
 
