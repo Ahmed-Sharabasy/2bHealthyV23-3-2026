@@ -2,7 +2,10 @@
 import { Router } from "express";
 import authMiddleware from "../middlewares/authMiddleware.js";
 import validateRequest from "../middlewares/validateRequest.js";
-import { validateWorkoutPlan, validateMealPlan } from "../validators/aiValidator.js";
+import {
+  validateWorkoutPlan,
+  validateMealPlan,
+} from "../validators/aiValidator.js";
 import { getWorkoutPlan } from "../controllers/aiWorkoutController.js";
 import { getMealPlan } from "../controllers/aiMealController.js";
 
@@ -14,16 +17,15 @@ router.post(
   authMiddleware,
   validateWorkoutPlan,
   validateRequest,
-  getWorkoutPlan
+  getWorkoutPlan,
 );
 
 // POST /api/v1/ai/meal-plan
 router.post(
   "/meal-plan",
-  authMiddleware,
   validateMealPlan,
   validateRequest,
-  getMealPlan
+  getMealPlan,
 );
 
 export default router;

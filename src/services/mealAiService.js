@@ -1,9 +1,30 @@
 // ── AI Meal Plan Service ────────────────────────────────────
+import Meal from "../models/Meal.js";
 import User from "../models/User.js";
 import { callAI } from "./openRouterAiService.js";
 import AppError from "../utils/AppError.js";
 
-const SPOONACULAR_BASE = "https://api.spoonacular.com";
+// ── Meal categorization maps ────────────────────────────────
+const BREAKFAST_CATEGORIES = new Set(["Breakfast", "Dessert", "Starter"]);
+const MAIN_MEAL_CATEGORIES = new Set([
+  "Chicken",
+  "Beef",
+  "Lamb",
+  "Pork",
+  "Goat",
+  "Pasta",
+  "Seafood",
+  "Vegetarian",
+  "Vegan",
+  "Miscellaneous",
+]);
+const SIDE_CATEGORIES = new Set(["Side"]);
+
+// Max meals to sample per pool (keeps AI prompt within token limits)
+const MAX_BREAKFAST_POOL = 30;
+const MAX_MAIN_POOL = 80;
+const MAX_RETRY_ATTEMPTS = 2;
+const MAX_MEAL_REPETITIONS = 5; // same meal max N times across 30 days
 
 /**
  * Compute age from dateOfBirth
@@ -24,7 +45,6 @@ const computeAge = (dateOfBirth) => {
  * Calculate daily calories using Mifflin–St Jeor equation + goal adjustment
  */
 const calculateDailyCalories = (weight, height, age, gender, fitnessGoal) => {
-  // Mifflin–St Jeor BMR
   let bmr;
   if (gender === "female") {
     bmr = 10 * weight + 6.25 * height - 5 * age - 161;
@@ -35,147 +55,358 @@ const calculateDailyCalories = (weight, height, age, gender, fitnessGoal) => {
   // TDEE with moderate activity multiplier (1.55)
   let tdee = bmr * 1.55;
 
-  // Adjust for goal
   switch (fitnessGoal) {
     case "fat_loss":
     case "weight_loss":
-      tdee -= 500; // caloric deficit
+      tdee -= 500;
       break;
     case "muscle_gain":
-      tdee += 300; // slight surplus
+      tdee += 300;
       break;
     case "weight_gain":
-      tdee += 500; // bigger surplus
+      tdee += 500;
       break;
     case "maintenance":
     default:
-      break; // no adjustment
+      break;
   }
 
-  return Math.round(Math.max(1200, tdee)); // minimum 1200 kcal
+  return Math.round(Math.max(1200, tdee));
 };
 
 /**
  * Calculate recommended water intake (liters)
  */
 const calculateWaterLiters = (weight, fitnessGoal) => {
-  // Base: ~30ml per kg of body weight
   let liters = Math.round((weight * 30) / 1000);
 
-  // Active / muscle gain goals need more water
   if (["muscle_gain", "weight_gain"].includes(fitnessGoal)) {
     liters += 1;
   }
 
-  // Clamp between 3 and 7
   return Math.max(3, Math.min(7, liters));
 };
 
+// ── Meal DB helpers ─────────────────────────────────────────
+
 /**
- * Fetch meal suggestions from Spoonacular
+ * Fetch all meals from DB, selecting only needed fields
  */
-const fetchSpoonacularMeals = async (dailyCalories, excludedFoods) => {
-  const apiKey = process.env.SPOONACULAR_API_KEY;
-  if (!apiKey) {
-    throw new AppError("Spoonacular API key is not configured", 500);
+const fetchMealsFromDB = async () => {
+  const meals = await Meal.find({})
+    .select("strMeal strCategory nutrition")
+    .lean();
+
+  if (!meals || meals.length === 0) {
+    throw new AppError("No meals found in database", 404);
   }
 
-  try {
-    // Use meal planner to get a day's worth of meals
-    const planUrl = `${SPOONACULAR_BASE}/mealplanner/generate?apiKey=${apiKey}&timeFrame=day&targetCalories=${dailyCalories}`;
-    const planResponse = await fetch(planUrl);
+  return meals;
+};
 
-    if (!planResponse.ok) {
-      throw new Error(`Spoonacular mealplanner responded with status ${planResponse.status}`);
+/**
+ * Categorize meals into breakfast / main (lunch/dinner) pools
+ */
+const categorizeMeals = (meals) => {
+  const breakfastPool = [];
+  const mainPool = [];
+
+  for (const meal of meals) {
+    const cat = meal.strCategory;
+
+    if (BREAKFAST_CATEGORIES.has(cat)) {
+      breakfastPool.push(meal);
     }
 
-    const planData = await planResponse.json();
-    const mealIds = (planData.meals || []).map((m) => m.id);
-
-    // Also search for more recipes for variety
-    const excludeQuery = excludedFoods.length > 0
-      ? `&excludeIngredients=${excludedFoods.join(",")}`
-      : "";
-    const searchUrl = `${SPOONACULAR_BASE}/recipes/complexSearch?apiKey=${apiKey}&addRecipeNutrition=true&number=12&sort=healthiness${excludeQuery}&targetCalories=${Math.round(dailyCalories / 3)}`;
-    const searchResponse = await fetch(searchUrl);
-
-    if (!searchResponse.ok) {
-      throw new Error(`Spoonacular search responded with status ${searchResponse.status}`);
+    if (MAIN_MEAL_CATEGORIES.has(cat) || SIDE_CATEGORIES.has(cat)) {
+      mainPool.push(meal);
     }
 
-    const searchData = await searchResponse.json();
+    // If category doesn't match either, still add to main pool as fallback
+    if (
+      !BREAKFAST_CATEGORIES.has(cat) &&
+      !MAIN_MEAL_CATEGORIES.has(cat) &&
+      !SIDE_CATEGORIES.has(cat)
+    ) {
+      mainPool.push(meal);
+    }
+  }
 
-    // Fetch info for meal plan recipes
-    const mealDetails = [];
-    for (const id of mealIds) {
-      try {
-        const infoUrl = `${SPOONACULAR_BASE}/recipes/${id}/information?apiKey=${apiKey}&includeNutrition=true`;
-        const infoRes = await fetch(infoUrl);
-        if (infoRes.ok) {
-          mealDetails.push(await infoRes.json());
-        }
-      } catch {
-        // skip individual failures
+  return { breakfastPool, mainPool };
+};
+
+/**
+ * Shuffle array in-place (Fisher–Yates)
+ */
+const shuffleArray = (arr) => {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
+/**
+ * Reduce meal objects to a compact format for the AI prompt
+ */
+const compactMealList = (meals) => {
+  return meals.map((m) => ({
+    name: m.strMeal,
+    cal: Math.round(m.nutrition?.calories || 0),
+    p: Math.round(m.nutrition?.protein || 0),
+    c: Math.round(m.nutrition?.carbs || 0),
+    f: Math.round(m.nutrition?.fat || 0),
+  }));
+};
+
+// ── Prompt builders ─────────────────────────────────────────
+
+/**
+ * Build the system prompt for Llama 3.1 70B (compact, strict)
+ */
+const buildLlamaPrompt = (goal, dailyCalories, breakfastList, mainList) => {
+  const system = `You are a nutrition planning AI.
+
+Use ONLY the provided meals for breakfast, lunch, and dinner.
+
+Goal: ${goal}
+Daily calorie target: ~${dailyCalories} kcal
+
+Rules:
+- 30-day plan
+- Each day: breakfast, lunch, dinner, snacks
+- breakfast MUST come from BREAKFAST_MEALS list
+- lunch and dinner MUST come from MAIN_MEALS list
+- Snacks can be generated freely (names only, no nutrition needed)
+- Avoid repeating the same meal more than 4-5 times across 30 days
+- Balance calories and macros based on goal
+- Each day's totalCalories should approximate ${dailyCalories}
+
+BREAKFAST_MEALS:
+${JSON.stringify(breakfastList)}
+
+MAIN_MEALS:
+${JSON.stringify(mainList)}
+
+Return ONLY valid JSON matching this exact schema:
+{"plan":[{"day":1,"meals":{"breakfast":{"name":"","calories":0,"protein":0,"carbs":0,"fat":0},"lunch":{"name":"","calories":0,"protein":0,"carbs":0,"fat":0},"dinner":{"name":"","calories":0,"protein":0,"carbs":0,"fat":0},"snacks":["",""]},"totalCalories":0}],"averageCalories":0}`;
+
+  return system;
+};
+
+/**
+ * Build the system prompt for Gemma 4 31B (more explicit to reduce hallucination)
+ */
+const buildGemmaPrompt = (goal, dailyCalories, breakfastList, mainList) => {
+  const system = `You MUST ONLY use meals from the provided lists below.
+DO NOT create or invent new meals for breakfast, lunch, or dinner.
+If a meal name is not in the lists below, DO NOT use it.
+
+Goal: ${goal}
+Daily calorie target: approximately ${dailyCalories} kcal
+
+Plan requirements:
+- Generate exactly 30 days
+- Each day must have: breakfast, lunch, dinner, snacks
+- breakfast MUST be selected from BREAKFAST_MEALS list only
+- lunch MUST be selected from MAIN_MEALS list only
+- dinner MUST be selected from MAIN_MEALS list only
+- snacks can be invented freely (provide 2 snack names per day, names only)
+- Avoid repeating the same meal more than 4-5 times in the entire 30-day plan
+- Ensure calorie distribution matches the goal (${goal})
+- Each day's totalCalories should be close to ${dailyCalories}
+- Use the nutrition values (cal, p, c, f) from the provided lists
+
+BREAKFAST_MEALS:
+${JSON.stringify(breakfastList)}
+
+MAIN_MEALS:
+${JSON.stringify(mainList)}
+
+STRICT OUTPUT FORMAT:
+Return ONLY valid JSON. No text before or after. No markdown. No explanation.
+The JSON must match this schema exactly:
+{
+  "plan": [
+    {
+      "day": 1,
+      "meals": {
+        "breakfast": { "name": "exact meal name from list", "calories": 0, "protein": 0, "carbs": 0, "fat": 0 },
+        "lunch": { "name": "exact meal name from list", "calories": 0, "protein": 0, "carbs": 0, "fat": 0 },
+        "dinner": { "name": "exact meal name from list", "calories": 0, "protein": 0, "carbs": 0, "fat": 0 },
+        "snacks": ["Snack Name 1", "Snack Name 2"]
+      },
+      "totalCalories": 0
+    }
+  ],
+  "averageCalories": 0
+}`;
+
+  return system;
+};
+
+// ── Validation ──────────────────────────────────────────────
+
+/**
+ * Validate a single meal entry from the AI response
+ * @returns {{ valid: boolean, corrected: object|null }}
+ */
+const validateMealEntry = (meal, validMealMap) => {
+  if (!meal || !meal.name || typeof meal.name !== "string") {
+    return { valid: false, corrected: null };
+  }
+
+  const name = meal.name.trim();
+
+  // Check if meal exists in DB (case-insensitive)
+  const dbMeal = validMealMap.get(name.toLowerCase());
+  if (!dbMeal) {
+    return { valid: false, corrected: null };
+  }
+
+  // Correct nutrition values from DB if AI hallucinated numbers
+  return {
+    valid: true,
+    corrected: {
+      name: dbMeal.strMeal, // use exact DB name
+      calories: Math.round(dbMeal.nutrition?.calories || meal.calories || 0),
+      protein: Math.round(dbMeal.nutrition?.protein || meal.protein || 0),
+      carbs: Math.round(dbMeal.nutrition?.carbs || meal.carbs || 0),
+      fat: Math.round(dbMeal.nutrition?.fat || meal.fat || 0),
+    },
+  };
+};
+
+/**
+ * Validate the entire 30-day plan from AI
+ *
+ * @param {object} plan - The parsed AI response
+ * @param {Map} validMealMap - Map of lowercase meal name → DB meal object
+ * @returns {{ isValid: boolean, errors: string[], correctedPlan: object }}
+ */
+const validateMealPlan = (plan, validMealMap) => {
+  const errors = [];
+
+  // ── Structure check ─────────────────────────────────────
+  if (!plan || !Array.isArray(plan.plan)) {
+    return {
+      isValid: false,
+      errors: ["Missing or invalid 'plan' array"],
+      correctedPlan: null,
+    };
+  }
+
+  if (plan.plan.length < 25) {
+    errors.push(`Plan has only ${plan.plan.length} days (expected 30)`);
+  }
+
+  // ── Per-day validation ──────────────────────────────────
+  const mealFrequency = {};
+  let totalCalories = 0;
+  let invalidMealCount = 0;
+
+  const correctedDays = [];
+
+  for (const dayEntry of plan.plan) {
+    if (!dayEntry.meals || typeof dayEntry.meals !== "object") {
+      errors.push(`Day ${dayEntry.day}: missing meals object`);
+      continue;
+    }
+
+    const correctedMeals = {};
+
+    // Validate breakfast, lunch, dinner
+    for (const slot of ["breakfast", "lunch", "dinner"]) {
+      const meal = dayEntry.meals[slot];
+      const result = validateMealEntry(meal, validMealMap);
+
+      if (!result.valid) {
+        invalidMealCount++;
+        errors.push(
+          `Day ${dayEntry.day} ${slot}: "${meal?.name || "empty"}" not found in DB`,
+        );
+        // Keep the invalid meal as-is (will be flagged)
+        correctedMeals[slot] = {
+          name: meal?.name || "Unknown",
+          calories: Number(meal?.calories) || 0,
+          protein: Number(meal?.protein) || 0,
+          carbs: Number(meal?.carbs) || 0,
+          fat: Number(meal?.fat) || 0,
+        };
+      } else {
+        correctedMeals[slot] = result.corrected;
+
+        // Track frequency
+        const key = result.corrected.name.toLowerCase();
+        mealFrequency[key] = (mealFrequency[key] || 0) + 1;
       }
     }
 
-    // Combine & format all recipes
-    const allRecipes = [
-      ...mealDetails.map(formatRecipeDetail),
-      ...(searchData.results || []).map(formatSearchResult),
-    ];
+    // Validate snacks (can be freely generated, just ensure they're strings)
+    let snacks = dayEntry.meals.snacks;
+    if (!Array.isArray(snacks)) {
+      snacks = [];
+    }
+    correctedMeals.snacks = snacks
+      .filter((s) => s && typeof s === "string")
+      .map((s) => String(s).trim())
+      .slice(0, 4); // max 4 snacks per day
 
-    return allRecipes;
-  } catch (err) {
-    if (err instanceof AppError) throw err;
-    throw new AppError(`Failed to fetch meals from Spoonacular: ${err.message}`, 502);
+    if (correctedMeals.snacks.length === 0) {
+      correctedMeals.snacks = ["Fresh Fruit", "Mixed Nuts"];
+    }
+
+    // Calculate day total
+    const dayTotal =
+      (correctedMeals.breakfast?.calories || 0) +
+      (correctedMeals.lunch?.calories || 0) +
+      (correctedMeals.dinner?.calories || 0);
+
+    totalCalories += dayTotal;
+
+    correctedDays.push({
+      day: dayEntry.day || correctedDays.length + 1,
+      meals: correctedMeals,
+      totalCalories: Math.round(dayTotal),
+    });
   }
-};
 
-/**
- * Format a recipe detail response
- */
-const formatRecipeDetail = (recipe) => {
-  const nutrients = recipe.nutrition?.nutrients || [];
+  // ── Repetition check (soft warning) ─────────────────────
+  for (const [mealName, count] of Object.entries(mealFrequency)) {
+    if (count > MAX_MEAL_REPETITIONS) {
+      errors.push(
+        `"${mealName}" repeated ${count} times (max ${MAX_MEAL_REPETITIONS})`,
+      );
+    }
+  }
+
+  // ── Decision: is it valid enough? ───────────────────────
+  const totalMainMeals = correctedDays.length * 3; // breakfast + lunch + dinner per day
+  const invalidRatio =
+    totalMainMeals > 0 ? invalidMealCount / totalMainMeals : 1;
+
+  // If more than 30% of meals are invalid → retry
+  const isValid = invalidRatio < 0.3 && correctedDays.length >= 25;
+
+  const avgCalories =
+    correctedDays.length > 0
+      ? Math.round(totalCalories / correctedDays.length)
+      : 0;
+
   return {
-    title: recipe.title || "Unknown",
-    calories: Math.round(findNutrient(nutrients, "Calories") || 0),
-    protein: Math.round(findNutrient(nutrients, "Protein") || 0),
-    fat: Math.round(findNutrient(nutrients, "Fat") || 0),
-    carbs: Math.round(findNutrient(nutrients, "Carbohydrates") || 0),
-    servings: recipe.servings || 1,
-    readyInMinutes: recipe.readyInMinutes || 30,
-    dishTypes: recipe.dishTypes || [],
+    isValid,
+    errors,
+    correctedPlan: {
+      plan: correctedDays,
+      averageCalories: avgCalories,
+    },
   };
 };
 
-/**
- * Format a search result recipe
- */
-const formatSearchResult = (recipe) => {
-  const nutrients = recipe.nutrition?.nutrients || [];
-  return {
-    title: recipe.title || "Unknown",
-    calories: Math.round(findNutrient(nutrients, "Calories") || 0),
-    protein: Math.round(findNutrient(nutrients, "Protein") || 0),
-    fat: Math.round(findNutrient(nutrients, "Fat") || 0),
-    carbs: Math.round(findNutrient(nutrients, "Carbohydrates") || 0),
-    servings: recipe.servings || 1,
-    readyInMinutes: recipe.readyInMinutes || 30,
-    dishTypes: recipe.dishTypes || [],
-  };
-};
+// ── Main entry point ────────────────────────────────────────
 
 /**
- * Find a nutrient by name
- */
-const findNutrient = (nutrients, name) => {
-  const n = nutrients.find((n) => n.name === name);
-  return n ? n.amount : 0;
-};
-
-/**
- * Generate an AI-powered meal plan
+ * Generate an AI-powered 30-day meal plan
  *
  * @param {string} userId - The authenticated user's _id
  * @param {object} params - Request body params
@@ -184,7 +415,7 @@ const findNutrient = (nutrients, name) => {
  * @param {string} params.target_time
  * @param {string[]} params.preferred_foods
  * @param {string[]} params.excluded_foods
- * @returns {object} The strict-JSON meal plan
+ * @returns {object} The validated 30-day meal plan
  */
 export const generateMealPlan = async (userId, params) => {
   const {
@@ -207,140 +438,115 @@ export const generateMealPlan = async (userId, params) => {
   const gender = user.gender || "male";
 
   // ── 2) Calculate daily calories & water ───────────────────
-  const dailyCalories = calculateDailyCalories(currentWeight, height, age, gender, fitness_goal);
+  const dailyCalories = calculateDailyCalories(
+    currentWeight,
+    height,
+    age,
+    gender,
+    fitness_goal,
+  );
   const waterLiters = calculateWaterLiters(currentWeight, fitness_goal);
 
-  // ── 3) Fetch meals from Spoonacular ───────────────────────
-  const spoonacularMeals = await fetchSpoonacularMeals(dailyCalories, excluded_foods);
+  // ── 3) Fetch & categorize meals from DB ───────────────────
+  const allMeals = await fetchMealsFromDB();
 
-  // ── 4) Build AI prompt ────────────────────────────────────
-  const systemPrompt = `You are a professional nutritionist AI. Generate a personalized daily meal plan.
-
-STRICT RULES:
-1. Output ONLY valid JSON — no markdown, no explanation, no extra text.
-2. Prefer foods from the preferred_foods list when possible.
-3. STRICTLY AVOID any food from the excluded_foods list. Never include them.
-4. Other foods not in either list are allowed normally.
-5. Provide EXACTLY 3 options for each meal type: breakfast, lunch, dinner, snacks.
-6. "dailyCalories" must be a number.
-7. "waterLiters" must be a number between 3 and 7.
-8. Each meal option must have "name" (string) and "foods" (array of strings).
-9. Do NOT add any extra fields beyond what is shown in the schema.
-10. Meals must be balanced — consider calories, protein, and fats.
-11. Total calories across all meals in a day should approximate the dailyCalories target.
-
-OUTPUT SCHEMA:
-{
-  "dailyCalories": number,
-  "waterLiters": number,
-  "meals": {
-    "breakfast": [
-      { "name": "Meal 1", "foods": ["food1", "food2"] },
-      { "name": "Meal 2", "foods": [] },
-      { "name": "Meal 3", "foods": [] }
-    ],
-    "lunch": [
-      { "name": "Meal 1", "foods": [] },
-      { "name": "Meal 2", "foods": [] },
-      { "name": "Meal 3", "foods": [] }
-    ],
-    "dinner": [
-      { "name": "Meal 1", "foods": [] },
-      { "name": "Meal 2", "foods": [] },
-      { "name": "Meal 3", "foods": [] }
-    ],
-    "snacks": [
-      { "name": "Snack 1", "foods": [] },
-      { "name": "Snack 2", "foods": [] },
-      { "name": "Snack 3", "foods": [] }
-    ]
-  }
-}`;
-
-  const userMessage = `USER PROFILE:
-- Age: ${age}
-- Gender: ${gender}
-- Height: ${height} cm
-- Current Weight: ${currentWeight} kg
-- Target Weight: ${target_weight} kg
-- Fitness Goal: ${fitness_goal}
-- Target Time: ${target_time}
-- Calculated Daily Calories: ${dailyCalories}
-- Calculated Water Intake: ${waterLiters} liters
-
-PREFERRED FOODS: ${preferred_foods.length > 0 ? preferred_foods.join(", ") : "None specified"}
-EXCLUDED FOODS (MUST AVOID): ${excluded_foods.length > 0 ? excluded_foods.join(", ") : "None"}
-
-REFERENCE RECIPES FROM DATABASE (use these as inspiration):
-${JSON.stringify(spoonacularMeals, null, 2)}
-
-Generate a complete daily meal plan following the strict schema. Make sure each meal is realistic, nutritionally balanced, and respects the user's preferences.`;
-
-  // ── 5) Call AI ────────────────────────────────────────────
-  const plan = await callAI(systemPrompt, userMessage);
-
-  // ── 6) Validate AI response ───────────────────────────────
-  return validateMealPlanResponse(plan, dailyCalories, waterLiters);
-};
-
-/**
- * Validate and sanitize the AI meal plan response
- */
-const validateMealPlanResponse = (plan, expectedCalories, expectedWater) => {
-  // Ensure dailyCalories
-  if (typeof plan.dailyCalories !== "number" || plan.dailyCalories < 1000) {
-    plan.dailyCalories = expectedCalories;
-  }
-  plan.dailyCalories = Math.round(plan.dailyCalories);
-
-  // Ensure waterLiters
-  if (typeof plan.waterLiters !== "number" || plan.waterLiters < 3) {
-    plan.waterLiters = expectedWater;
-  }
-  plan.waterLiters = Math.max(3, Math.min(7, Math.round(plan.waterLiters)));
-
-  // Validate meals structure
-  if (!plan.meals || typeof plan.meals !== "object") {
-    throw new AppError("AI returned an invalid meal plan structure", 500);
+  // Build a lookup map for validation (lowercase name → meal object)
+  const validMealMap = new Map();
+  for (const m of allMeals) {
+    validMealMap.set(m.strMeal.toLowerCase(), m);
   }
 
-  const mealTypes = ["breakfast", "lunch", "dinner", "snacks"];
-  for (const type of mealTypes) {
-    if (!Array.isArray(plan.meals[type])) {
-      plan.meals[type] = [];
-    }
+  const { breakfastPool, mainPool } = categorizeMeals(allMeals);
 
-    // Ensure exactly 3 options
-    plan.meals[type] = plan.meals[type].slice(0, 3);
+  // Sample subsets to keep prompt within token limits
+  const sampledBreakfast = shuffleArray([...breakfastPool]).slice(
+    0,
+    MAX_BREAKFAST_POOL,
+  );
+  const sampledMain = shuffleArray([...mainPool]).slice(0, MAX_MAIN_POOL);
 
-    // Pad if less than 3
-    while (plan.meals[type].length < 3) {
-      plan.meals[type].push({
-        name: `${type.charAt(0).toUpperCase() + type.slice(1)} Option ${plan.meals[type].length + 1}`,
-        foods: [],
-      });
-    }
+  // Compact for AI prompt
+  const breakfastList = compactMealList(sampledBreakfast);
+  const mainList = compactMealList(sampledMain);
 
-    // Sanitize each meal option
-    plan.meals[type] = plan.meals[type].map((meal) => ({
-      name: String(meal.name || "Unnamed Meal"),
-      foods: Array.isArray(meal.foods)
-        ? meal.foods.map((f) => String(f))
-        : [],
-    }));
-  }
+  console.log(
+    `📦 Meal pools: ${breakfastList.length} breakfast, ${mainList.length} main`,
+  );
 
-  // Return only allowed fields
-  return {
-    dailyCalories: plan.dailyCalories,
-    waterLiters: plan.waterLiters,
-    meals: {
-      breakfast: plan.meals.breakfast,
-      lunch: plan.meals.lunch,
-      dinner: plan.meals.dinner,
-      snacks: plan.meals.snacks,
-    },
+  // ── 4) Map fitness_goal to a human-readable goal string ───
+  const goalMap = {
+    fat_loss: "weight loss",
+    weight_loss: "weight loss",
+    muscle_gain: "weight gain",
+    weight_gain: "weight gain",
+    maintenance: "maintenance",
   };
+  const goal = goalMap[fitness_goal] || "maintenance";
+
+  // ── 5) Build prompt & call AI (with retry on validation failure) ──
+  const systemPrompt = buildLlamaPrompt(
+    goal,
+    dailyCalories,
+    breakfastList,
+    mainList,
+  );
+  const userMessage = `Generate the 30-day meal plan now. Goal: ${goal}, Target: ~${dailyCalories} kcal/day.`;
+
+  let lastErrors = [];
+
+  for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    console.log(
+      `🍽️  Meal plan generation attempt ${attempt}/${MAX_RETRY_ATTEMPTS}`,
+    );
+
+    try {
+      const aiResponse = await callAI(systemPrompt, userMessage);
+
+      // ── 6) Validate AI response ─────────────────────────────
+      const validation = validateMealPlan(aiResponse, validMealMap);
+
+      if (validation.errors.length > 0) {
+        console.warn(
+          `⚠️ Validation warnings (attempt ${attempt}):`,
+          validation.errors.slice(0, 10),
+        );
+      }
+
+      if (validation.isValid) {
+        console.log(
+          `✅ Meal plan validated successfully on attempt ${attempt}`,
+        );
+        return {
+          dailyCalories,
+          waterLiters,
+          goal: fitness_goal,
+          totalDays: validation.correctedPlan.plan.length,
+          averageCalories: validation.correctedPlan.averageCalories,
+          plan: validation.correctedPlan.plan,
+        };
+      }
+
+      // Not valid enough → store errors and retry
+      lastErrors = validation.errors;
+      console.error(
+        `❌ Validation failed (attempt ${attempt}): ${validation.errors.length} errors`,
+      );
+    } catch (err) {
+      console.error(`❌ AI call failed (attempt ${attempt}):`, err.message);
+      lastErrors = [err.message];
+
+      // If it's the last attempt, throw
+      if (attempt === MAX_RETRY_ATTEMPTS) {
+        throw err;
+      }
+    }
+  }
+
+  // All retry attempts exhausted
+  throw new AppError(
+    `Failed to generate a valid meal plan after ${MAX_RETRY_ATTEMPTS} attempts. Errors: ${lastErrors.slice(0, 5).join("; ")}`,
+    500,
+  );
 };
 
 export default { generateMealPlan };
