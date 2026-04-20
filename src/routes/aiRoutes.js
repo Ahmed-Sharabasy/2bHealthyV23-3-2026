@@ -23,6 +23,7 @@ router.post(
 // POST /api/v1/ai/meal-plan
 router.post(
   "/meal-plan",
+  authMiddleware,
   validateMealPlan,
   validateRequest,
   getMealPlan,

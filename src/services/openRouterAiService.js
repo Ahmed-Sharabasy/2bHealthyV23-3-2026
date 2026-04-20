@@ -1,51 +1,66 @@
-// ── OpenRouter AI Client with Fallback & Retry ──────────────
+// ── OpenRouter AI Service ───────────────────────────────────
 import AppError from "../utils/AppError.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const PRIMARY_MODEL = "meta-llama/llama-3.1-70b-instruct";
-const FALLBACK_MODEL = "google/gemma-4-31b-it:free";
+// export const PRIMARY_MODEL = "openai/gpt-oss-120b:free";
+export const PRIMARY_MODEL = "meta-llama/llama-3.1-70b-instruct";
+// export const FALLBACK_MODEL = "meta-llama/llama-3.1-70b-instruct";
+export const FALLBACK_MODEL = "openai/gpt-oss-120b:free";
 
-const MAX_RETRIES = 2;
-const BASE_DELAY_MS = 1000;
-const REQUEST_TIMEOUT_MS = 90_000; // 90s — large JSON responses need time
-
-/**
- * Sleep helper for exponential backoff
- */
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const REQUEST_TIMEOUT_MS = 120_000;
 
 /**
- * Strip markdown code fences from AI response
+ * Sleep helper
  */
-const stripCodeFences = (text) => {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Extract and repair JSON from AI response.
+ * Handles: code fences, trailing commas, single quotes, control chars.
+ */
+const extractJSON = (text) => {
   let cleaned = text.trim();
-  // Remove ```json ... ``` or ``` ... ```
-  cleaned = cleaned
-    .replace(/^```(?:json)?\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "");
-  return cleaned.trim();
+
+  // Remove markdown code fences
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/i);
+  if (fenceMatch) {
+    cleaned = fenceMatch[1].trim();
+  } else {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      cleaned = cleaned.substring(start, end + 1);
+    }
+  }
+
+  // Fix trailing commas before } or ] (common AI mistake)
+  cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
+
+  // Fix single-quoted strings → double quotes (crude but effective)
+  // Only if JSON.parse would fail
+  try {
+    JSON.parse(cleaned);
+    return cleaned;
+  } catch {
+    // Try replacing single quotes
+    cleaned = cleaned.replace(/'/g, '"');
+  }
+
+  return cleaned;
 };
 
 /**
- * Send a chat completion request to OpenRouter
- * @param {string} model - The model identifier
- * @param {string} systemPrompt - System-level instructions
- * @param {string} userMessage - The user-level message/data
- * @returns {string} Raw AI response content
+ * Send request to OpenRouter
  */
-const sendRequest = async (model, systemPrompt, userMessage) => {
+const sendRequest = async (model, systemPrompt, userMessage, temperature) => {
   const apiKey = process.env.OPEN_ROUTER_SECRET_KEY;
+  if (!apiKey) throw new AppError("OpenRouter API key not configured", 500);
 
-  if (!apiKey) {
-    throw new AppError("OpenRouter API key is not configured", 500);
-  }
-
-  // ── Timeout via AbortController ─────────────────────────
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    const response = await fetch(OPENROUTER_URL, {
+    const res = await fetch(OPENROUTER_URL, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -58,35 +73,32 @@ const sendRequest = async (model, systemPrompt, userMessage) => {
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
-        temperature: 0.3,
+        temperature,
         max_tokens: 16384,
       }),
     });
 
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => "Unknown error");
+    if (!res.ok) {
+      const body = await res.text().catch(() => "Unknown");
       const err = new Error(
-        `OpenRouter ${response.status}: ${errorBody.substring(0, 200)}`,
+        `OpenRouter ${res.status}: ${body.substring(0, 200)}`,
       );
-      err.statusCode = response.status;
+      err.statusCode = res.status;
       throw err;
     }
 
-    const data = await response.json();
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Empty AI response");
 
-    if (!data.choices?.[0]?.message?.content) {
-      throw new Error("Empty response from OpenRouter AI");
-    }
-
-    return data.choices[0].message.content;
+    return content;
   } catch (err) {
-    // Convert AbortError to a friendlier message
     if (err.name === "AbortError") {
-      const timeoutErr = new Error(
-        `OpenRouter request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`,
+      const e = new Error(
+        `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`,
       );
-      timeoutErr.statusCode = 408;
-      throw timeoutErr;
+      e.statusCode = 408;
+      throw e;
     }
     throw err;
   } finally {
@@ -95,81 +107,39 @@ const sendRequest = async (model, systemPrompt, userMessage) => {
 };
 
 /**
- * Call AI with retry + model fallback logic
+ * Call AI: try PRIMARY once → if fails → try FALLBACK once.
  *
- * Flow:
- *  1. Try primary model (up to MAX_RETRIES with exponential backoff)
- *  2. If primary exhausted → try fallback model (up to MAX_RETRIES)
- *  3. If all fail → throw AppError
- *
- * @param {string} systemPrompt - System instructions for the AI
- * @param {string} userMessage - The data/question for the AI
- * @param {object} [options] - Optional config
- * @param {boolean} [options.parseJson=true] - Whether to parse response as JSON
- * @returns {object|string} Parsed JSON or raw string response
+ * @param {object} prompts - { primary: { system, user }, fallback: { system, user } }
+ * @returns {object} Parsed JSON response
  */
-export const callAI = async (systemPrompt, userMessage, options = {}) => {
-  const { parseJson = true } = options;
-  const models = [PRIMARY_MODEL, FALLBACK_MODEL];
+export const callAI = async (prompts) => {
+  const attempts = [
+    { model: PRIMARY_MODEL, prompt: prompts.primary, temp: 0.3 },
+    { model: FALLBACK_MODEL, prompt: prompts.fallback, temp: 0.3 },
+  ];
 
   let lastError = null;
 
-  for (const model of models) {
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  for (const { model, prompt, temp } of attempts) {
+    try {
+      console.log(`🤖 AI → ${model}`);
+      const raw = await sendRequest(model, prompt.system, prompt.user, temp);
+
+      // Parse JSON
+      const json = extractJSON(raw);
       try {
-        console.log(
-          `🤖 AI request → model: ${model}, attempt: ${attempt}/${MAX_RETRIES}`,
-        );
-
-        const rawContent = await sendRequest(model, systemPrompt, userMessage);
-
-        if (!parseJson) {
-          return rawContent;
-        }
-
-        // Parse JSON from AI response
-        const cleaned = stripCodeFences(rawContent);
-        try {
-          return JSON.parse(cleaned);
-        } catch (parseErr) {
-          console.error(
-            `⚠️ JSON parse failed (model: ${model}):`,
-            parseErr.message,
-          );
-          console.error(`   Raw content: ${cleaned.substring(0, 300)}`);
-          throw new Error(`AI returned invalid JSON: ${parseErr.message}`);
-        }
-      } catch (err) {
-        lastError = err;
-        console.error(
-          `❌ AI call failed (model: ${model}, attempt ${attempt}): ${err.message}`,
-        );
-
-        // If retryable (429, 5xx, timeout, network) and not last attempt → backoff
-        const isRetryable =
-          err.statusCode === 408 ||
-          err.statusCode === 429 ||
-          (err.statusCode >= 500 && err.statusCode < 600) ||
-          !err.statusCode;
-
-        if (isRetryable && attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-          console.log(`⏳ Retrying in ${delay}ms...`);
-          await sleep(delay);
-        } else if (!isRetryable) {
-          // Non-retryable error (e.g. 400, 401) → skip to fallback model
-          break;
-        }
+        return JSON.parse(json);
+      } catch (parseErr) {
+        console.error(`⚠️ JSON parse failed:`, parseErr.message);
+        console.error(`   Preview: ${json.substring(0, 300)}`);
+        throw new Error(`Invalid JSON from AI: ${parseErr.message}`);
       }
+    } catch (err) {
+      lastError = err;
+      console.error(`❌ Failed (${model}): ${err.message}`);
+      console.log(`🔄 Switching to fallback...`);
     }
-    console.log(`🔄 Switching to next model fallback...`);
   }
 
-  // All models and retries exhausted
-  throw new AppError(
-    `AI service unavailable after all retries: ${lastError?.message || "Unknown error"}`,
-    503,
-  );
+  throw new AppError(`AI service failed: ${lastError?.message}`, 503);
 };
-
-export default { callAI };

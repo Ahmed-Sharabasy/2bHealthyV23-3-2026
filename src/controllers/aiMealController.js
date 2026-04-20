@@ -4,81 +4,52 @@ import AppError from "../utils/AppError.js";
 
 /**
  * POST /api/v1/ai/meal-plan
- * Generate a smart AI-powered 30-day meal plan
  *
  * Body:
- *   - fitness_goal: "weight_loss" | "weight_gain" | "fat_loss" | "muscle_gain" | "maintenance"
+ *   - fitness_goal: "fat_loss" | "weight_gain"
  *   - target_weight: number (kg)
- *   - target_time: string (e.g. "3 months")
- *   - weight: number (current weight in kg)
- *   - height: number (height in cm)
- *   - age: number
- *   - gender: "male" | "female"
- *   - preferred_foods?: string[]
- *   - excluded_foods?: string[]
+ *   - target_time: string (e.g. "1 month", "2 weeks")
+ *   - excluded_foods: string[] (category names to exclude)
  */
 export const getMealPlan = async (req, res, next) => {
+  const start = Date.now();
+
   try {
-    const { fitness_goal } = req.body;
+    const { fitness_goal, target_weight, target_time, excluded_foods = [] } =
+      req.body;
 
-    // ── Validate required fields ─────────────────────────────
-    if (!fitness_goal) {
-      return next(new AppError("fitness_goal is required", 400));
-    }
+    console.log(`\n🍽️ ═══ Meal Plan Request ═══`);
+    console.log(
+      `   Goal: ${fitness_goal}, Target: ${target_weight}kg, Duration: ${target_time}`,
+    );
+    if (excluded_foods.length)
+      console.log(`   Excluded: ${excluded_foods.join(", ")}`);
 
-    const validGoals = [
-      "fat_loss",
-      "muscle_gain",
-      "weight_gain",
-      "weight_loss",
-      "maintenance",
-    ];
-    if (!validGoals.includes(fitness_goal)) {
-      return next(
-        new AppError(
-          `Invalid fitness_goal. Must be one of: ${validGoals.join(", ")}`,
-          400,
-        ),
-      );
-    }
-
-    // ── Generate meal plan ───────────────────────────────────
-    const plan = await generateMealPlan({
+    // Generate plan
+    const result = await generateMealPlan({
       fitness_goal,
-      target_weight: req.body.target_weight,
-      target_time: req.body.target_time,
-      weight: req.body.weight || 70,
-      height: req.body.height || 170,
-      age: req.body.age || 25,
-      gender: req.body.gender || "male",
-      preferred_foods: req.body.preferred_foods || [],
-      excluded_foods: req.body.excluded_foods || [],
+      target_weight,
+      target_time,
+      excluded_foods,
     });
 
-    // ── Verify response structure ────────────────────────────
-    if (!plan || !Array.isArray(plan.plan) || plan.plan.length === 0) {
-      return next(
-        new AppError("AI generated an empty or invalid meal plan", 500),
-      );
+    // Safety check
+    if (!result || !Array.isArray(result.plan) || result.plan.length === 0) {
+      return next(new AppError("AI returned an empty meal plan", 500));
     }
 
-    // ── Return structured response ───────────────────────────
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    console.log(`✅ Meal plan ready: ${result.plan.length} days in ${elapsed}s`);
+
     res.status(200).json({
       status: "success",
-      data: {
-        goal: plan.goal,
-        dailyCalories: plan.dailyCalories,
-        waterLiters: plan.waterLiters,
-        totalDays: plan.totalDays,
-        averageCalories: plan.averageCalories,
-        plan: plan.plan,
-      },
+      data: result,
     });
   } catch (err) {
-    if (err instanceof AppError) {
-      return next(err);
-    }
-    console.error("❌ Meal plan generation error:", err);
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    console.error(`❌ Meal plan failed (${elapsed}s): ${err.message}`);
+
+    if (err instanceof AppError) return next(err);
     next(new AppError(`Failed to generate meal plan: ${err.message}`, 500));
   }
 };
