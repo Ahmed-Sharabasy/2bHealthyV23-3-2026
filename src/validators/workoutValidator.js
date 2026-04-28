@@ -1,6 +1,29 @@
 import { body } from "express-validator";
 import { GOAL_TYPES } from "../config/constants.js";
 
+// ═══════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Normalize target_time string → days.
+ * "1 months" → 30, "2 weeks" → 14, "10 days" → 10
+ */
+export const normalizeTargetTime = (targetTime) => {
+  if (!targetTime) return 30;
+  const match = targetTime.match(/(\d+)/);
+  if (!match) return 30;
+  const num = parseInt(match[1], 10);
+  const lower = targetTime.toLowerCase();
+  if (lower.includes("month")) return `${num * 30} day`;
+  if (lower.includes("week")) return `${num * 7} day`;
+  return `${num} day`;
+};
+
+// ═══════════════════════════════════════════════════════════
+//  EXISTING WORKOUT VALIDATORS
+// ═══════════════════════════════════════════════════════════
+
 export const generateWorkoutPlanValidator = [
   body("goalType")
     .notEmpty()
@@ -55,6 +78,7 @@ export const completeWorkoutValidator = [
 ];
 
 export default {
+  normalizeTargetTime,
   generateWorkoutPlanValidator,
   logDailyWorkoutValidator,
   completeWorkoutValidator,

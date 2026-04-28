@@ -1,291 +1,298 @@
-// ── AI Workout Plan Service ─────────────────────────────────
+// ── Workout AI Service ──────────────────────────────────────
 import Exercise from "../models/Exercise.js";
-import User from "../models/User.js";
 import { callAI } from "./openRouterAiService.js";
 import AppError from "../utils/AppError.js";
 
-// ── Map injury keywords → body parts to avoid ──────────────
-const INJURY_BODYPART_MAP = {
-  knee: ["upper legs", "lower legs"],
-  ankle: ["lower legs", "cardio"],
-  shoulder: ["shoulders", "upper arms"],
-  back: ["back"],
-  "lower back": ["back", "waist"],
-  wrist: ["lower arms", "upper arms"],
-  hip: ["upper legs", "waist"],
-  neck: ["neck"],
-  elbow: ["lower arms", "upper arms"],
-  chest: ["chest"],
+const MAX_EXERCISES_PER_BODYPART = 10;
+
+// ═══════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Parse target_time string → number of days.
+ * "1 months" → 30, "2 weeks" → 14, "10 days" → 10
+ */
+const parseDuration = (targetTime) => {
+  if (!targetTime) return 30;
+  const match = targetTime.match(/(\d+)/);
+  if (!match) return 30;
+  const num = parseInt(match[1], 10);
+  const lower = targetTime.toLowerCase();
+  if (lower.includes("month")) return num * 30;
+  if (lower.includes("week")) return num * 7;
+  return num;
 };
 
 /**
- * Compute age from dateOfBirth
+ * Shuffle array in-place (Fisher-Yates).
  */
-const computeAge = (dateOfBirth) => {
-  if (!dateOfBirth) return 25; // default
-  const today = new Date();
-  const birth = new Date(dateOfBirth);
-  let age = today.getFullYear() - birth.getFullYear();
-  const monthDiff = today.getMonth() - birth.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
-    age--;
+const shuffle = (arr) => {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-  return age;
+  return arr;
 };
 
-/**
- * Parse target_time string into approximate months
- */
-const parseTargetMonths = (targetTime) => {
-  if (!targetTime) return 3;
-  const str = targetTime.toLowerCase();
-  const weekMatch = str.match(/(\d+)\s*week/);
-  const monthMatch = str.match(/(\d+)\s*month/);
-  const yearMatch = str.match(/(\d+)\s*year/);
-
-  if (weekMatch) return Math.max(0.25, parseInt(weekMatch[1]) / 4);
-  if (monthMatch) return parseInt(monthMatch[1]);
-  if (yearMatch) return parseInt(yearMatch[1]) * 12;
-  return 3; // default 3 months
-};
+// ═══════════════════════════════════════════════════════════
+//  DATABASE
+// ═══════════════════════════════════════════════════════════
 
 /**
- * Compute difficulty based on how aggressive the target is
+ * Fetch exercises from DB, excluding injured muscle targets.
+ * Filters both primary target and secondaryMuscles.
  */
-const computeDifficulty = (currentWeight, targetWeight, targetMonths) => {
-  const weightDiff = Math.abs(targetWeight - currentWeight);
-  const monthlyRate = weightDiff / targetMonths;
+const fetchExercises = async (injuries = []) => {
+  const filter = {};
+  const injuredLower = injuries.map((i) => i.toLowerCase());
 
-  // > 4 kg/month is aggressive, > 2 is moderate
-  if (monthlyRate > 4) return "hard";
-  if (monthlyRate > 2) return "medium";
-  return "easy";
-};
-
-/**
- * Get body parts to exclude based on injuries
- */
-const getExcludedBodyParts = (injuries = []) => {
-  const excluded = new Set();
-  for (const injury of injuries) {
-    const key = injury.toLowerCase().trim();
-    // Check exact match first, then partial match
-    if (INJURY_BODYPART_MAP[key]) {
-      INJURY_BODYPART_MAP[key].forEach((bp) => excluded.add(bp));
-    } else {
-      // Partial match
-      for (const [injuryKey, bodyParts] of Object.entries(INJURY_BODYPART_MAP)) {
-        if (key.includes(injuryKey) || injuryKey.includes(key)) {
-          bodyParts.forEach((bp) => excluded.add(bp));
-        }
-      }
-    }
-  }
-  return [...excluded];
-};
-
-/**
- * Build the body-part focus list based on fitness goal
- */
-const getGoalBodyPartFocus = (fitnessGoal) => {
-  switch (fitnessGoal) {
-    case "muscle_gain":
-    case "weight_gain":
-      return ["chest", "back", "upper legs", "shoulders", "upper arms"];
-    case "fat_loss":
-    case "weight_loss":
-      return ["cardio", "upper legs", "waist", "back", "chest"];
-    default:
-      return []; // all body parts
-  }
-};
-
-/**
- * Generate an AI-powered workout plan
- *
- * @param {string} userId - The authenticated user's _id
- * @param {object} params - Request body params
- * @param {string} params.fitness_goal
- * @param {number} params.target_weight
- * @param {string} params.target_time
- * @param {string[]} params.workout_days
- * @param {string[]} [params.injuries]
- * @returns {object} The strict-JSON workout plan
- */
-export const generateWorkoutPlan = async (userId, params) => {
-  const { fitness_goal, target_weight, target_time, workout_days, injuries = [] } = params;
-
-  // ── 1) Fetch user profile ─────────────────────────────────
-  const user = await User.findById(userId);
-  if (!user) {
-    throw new AppError("User not found", 404);
+  if (injuredLower.length > 0) {
+    filter.target = { $nin: injuredLower };
+    filter.secondaryMuscles = { $nin: injuredLower };
   }
 
-  const age = computeAge(user.dateOfBirth);
-  const currentWeight = user.weightKg || 70;
-  const height = user.heightCm || 170;
-  const gender = user.gender || "male";
-
-  // ── 2) Compute difficulty ─────────────────────────────────
-  const targetMonths = parseTargetMonths(target_time);
-  const difficulty = computeDifficulty(currentWeight, target_weight, targetMonths);
-
-  // ── 3) Determine exercise limits per difficulty ───────────
-  const exerciseLimits = {
-    easy: { perDay: 4, setsRange: [2, 3], repsRange: [10, 15] },
-    medium: { perDay: 5, setsRange: [3, 4], repsRange: [8, 12] },
-    hard: { perDay: 6, setsRange: [4, 5], repsRange: [6, 10] },
-  };
-  const limits = exerciseLimits[difficulty];
-
-  // ── 4) Build exercise query filters ───────────────────────
-  const excludedBodyParts = getExcludedBodyParts(injuries);
-  const focusBodyParts = getGoalBodyPartFocus(fitness_goal);
-
-  const query = {};
-  if (excludedBodyParts.length > 0) {
-    query.bodyPart = { $nin: excludedBodyParts };
-  }
-  if (focusBodyParts.length > 0 && excludedBodyParts.length === 0) {
-    query.bodyPart = { $in: focusBodyParts };
-  } else if (focusBodyParts.length > 0 && excludedBodyParts.length > 0) {
-    const safeFocus = focusBodyParts.filter((bp) => !excludedBodyParts.includes(bp));
-    if (safeFocus.length > 0) {
-      query.bodyPart = { $in: safeFocus, $nin: excludedBodyParts };
-    }
-  }
-
-  // ── 5) Fetch exercises from DB ────────────────────────────
-  const maxExercises = workout_days.length * limits.perDay * 2; // fetch extra for variety
-  const exercises = await Exercise.find(query)
-    .select("id name bodyPart equipment target secondaryMuscles")
-    .limit(maxExercises)
+  const exercises = await Exercise.find(filter)
+    .select("id name bodyPart target equipment gifUrl cloudinaryGifUrl")
     .lean();
 
-  if (exercises.length === 0) {
-    throw new AppError(
-      "No exercises found matching your criteria. Try adjusting injuries or goal.",
-      404
-    );
+  if (!exercises || exercises.length === 0) {
+    throw new AppError("No exercises found after filtering injuries", 404);
   }
 
-  // ── 6) Format exercises for AI ────────────────────────────
-  const exerciseList = exercises.map((e) => ({
-    exerciseId: e.id,
-    name: e.name,
-    bodyPart: e.bodyPart,
-    equipment: e.equipment,
-    target: e.target,
-  }));
-
-  // ── 7) Build AI prompt ────────────────────────────────────
-  const systemPrompt = `You are a professional fitness coach AI. Generate a workout plan using ONLY the exercises provided.
-
-STRICT RULES:
-1. Use ONLY exerciseId values from the provided exercise list. Do NOT invent or hallucinate exercises.
-2. Output ONLY valid JSON — no markdown, no explanation, no extra text.
-3. "sets" and "reps" MUST be numbers (not strings).
-4. "exerciseId" MUST exactly match one from the provided list.
-5. "difficulty" must be one of: "easy", "medium", "hard".
-6. Schedule must use ONLY the days provided in workout_days.
-7. Each day should have ${limits.perDay} exercises, targeting different body parts for variety.
-8. Do NOT add any extra fields beyond what is shown in the schema.
-
-OUTPUT SCHEMA:
-{
-  "schedule": ["Day1", "Day2"],
-  "difficulty": "easy|medium|hard",
-  "estimatedWeeklyProgress": "X kg",
-  "exercises": [
-    {
-      "day": "Day1",
-      "routines": [
-        {
-          "exerciseId": "string",
-          "name": "string",
-          "sets": number,
-          "reps": number
-        }
-      ]
-    }
-  ]
-}`;
-
-  const userMessage = `USER PROFILE:
-- Age: ${age}
-- Gender: ${gender}
-- Height: ${height} cm
-- Weight: ${currentWeight} kg
-- Fitness Goal: ${fitness_goal}
-- Target Weight: ${target_weight} kg
-- Target Time: ${target_time}
-- Difficulty Level: ${difficulty}
-- Workout Days: ${JSON.stringify(workout_days)}
-- Injuries: ${injuries.length > 0 ? injuries.join(", ") : "None"}
-
-Sets range: ${limits.setsRange[0]}-${limits.setsRange[1]}
-Reps range: ${limits.repsRange[0]}-${limits.repsRange[1]}
-
-AVAILABLE EXERCISES (use ONLY these):
-${JSON.stringify(exerciseList, null, 2)}`;
-
-  // ── 8) Call AI ────────────────────────────────────────────
-  const plan = await callAI(systemPrompt, userMessage);
-
-  // ── 9) Validate AI response ───────────────────────────────
-  return validateWorkoutPlanResponse(plan, exercises, workout_days, difficulty);
+  return exercises;
 };
 
 /**
- * Validate and sanitize the AI workout plan response
+ * Sample exercises per bodyPart for token efficiency.
+ * Returns a shuffled subset limited per body part.
  */
-const validateWorkoutPlanResponse = (plan, dbExercises, workoutDays, difficulty) => {
-  // Build a set of valid exercise IDs
-  const validIds = new Set(dbExercises.map((e) => e.id));
-
-  // Ensure schedule array
-  if (!Array.isArray(plan.schedule)) {
-    plan.schedule = workoutDays;
+const sampleExercises = (exercises) => {
+  const grouped = {};
+  for (const ex of exercises) {
+    if (!grouped[ex.bodyPart]) grouped[ex.bodyPart] = [];
+    grouped[ex.bodyPart].push(ex);
   }
 
-  // Ensure difficulty
-  if (!["easy", "medium", "hard"].includes(plan.difficulty)) {
-    plan.difficulty = difficulty;
+  const sampled = [];
+  for (const exs of Object.values(grouped)) {
+    shuffle(exs);
+    sampled.push(...exs.slice(0, MAX_EXERCISES_PER_BODYPART));
   }
 
-  // Ensure estimatedWeeklyProgress is a string
-  if (typeof plan.estimatedWeeklyProgress !== "string") {
-    plan.estimatedWeeklyProgress = "0.5 kg";
-  }
+  return sampled;
+};
 
-  // Validate exercises array
-  if (!Array.isArray(plan.exercises)) {
-    throw new AppError("AI returned an invalid workout plan structure", 500);
-  }
+// ═══════════════════════════════════════════════════════════
+//  PROMPTS
+// ═══════════════════════════════════════════════════════════
 
-  for (const dayPlan of plan.exercises) {
-    if (!dayPlan.day || !Array.isArray(dayPlan.routines)) continue;
+/**
+ * Build compact exercise list for AI (omit gifUrl to save tokens).
+ */
+const toCompactList = (exercises) =>
+  exercises.map((e) => ({
+    id: e.id,
+    name: e.name,
+    bodyPart: e.bodyPart,
+    target: e.target,
+    equipment: e.equipment,
+  }));
 
-    dayPlan.routines = dayPlan.routines
-      .filter((r) => r.exerciseId && validIds.has(r.exerciseId))
-      .map((r) => ({
-        exerciseId: r.exerciseId,
-        name: String(r.name || ""),
-        sets: Math.max(1, Math.min(10, parseInt(r.sets) || 3)),
-        reps: Math.max(1, Math.min(30, parseInt(r.reps) || 10)),
-      }));
-  }
-
-  // Return only allowed fields
-  return {
-    schedule: plan.schedule,
-    difficulty: plan.difficulty,
-    estimatedWeeklyProgress: plan.estimatedWeeklyProgress,
-    exercises: plan.exercises.map((d) => ({
-      day: d.day,
-      routines: d.routines,
-    })),
+/**
+ * Goal-specific rep/set guidance (one-liner for prompt).
+ */
+const goalHint = (goal) => {
+  const hints = {
+    muscle_gain: "Heavy weight, 3-5 sets, 8-12 reps",
+    fat_loss: "Moderate weight, 3-4 sets, 12-15 reps, short rest",
+    weight_loss: "Light-moderate weight, 3-4 sets, 12-15 reps",
+    weight_gain: "Heavy weight, 4-5 sets, 6-10 reps",
+    maintenance: "Moderate weight, 3 sets, 10-12 reps",
   };
+  return hints[goal] || hints.maintenance;
+};
+
+const buildPrimaryPrompt = (params, exerciseList) => {
+  const system = `You are a workout planning AI. Return ONLY valid JSON.
+
+Create a workout plan using ONLY exercises from the provided list.
+
+User info:
+- Goal: ${params.fitness_goal}
+- Days: ${params.workout_days.join(", ")}
+- Style: ${goalHint(params.fitness_goal)}
+
+Rules:
+- One entry per workout day
+- 4-6 exercises per day
+- Reference exercises by "id" from the list
+- Assign sets and reps based on goal
+- Choose a logical focus bodyPart per day
+- Minimize exercise repetition across days
+
+Exercises:
+${JSON.stringify(exerciseList)}
+
+Return ONLY this JSON:
+{"plan":[{"day":"Monday","focus":"chest","exercises":[{"id":"0001","sets":3,"reps":"10-12"}]}]}`;
+
+  return {
+    system,
+    user: "Generate the workout plan now. JSON only.",
+  };
+};
+
+const buildFallbackPrompt = (params, exerciseList) => {
+  const system = `Create workout plan. JSON only. Use ONLY exercises from list by "id".
+Goal: ${params.fitness_goal}. Days: ${params.workout_days.join(", ")}.
+Style: ${goalHint(params.fitness_goal)}.
+4-6 exercises/day. Assign sets and reps. Pick focus per day.
+Exercises: ${JSON.stringify(exerciseList)}
+Format: {"plan":[{"day":"Monday","focus":"chest","exercises":[{"id":"0001","sets":3,"reps":"10-12"}]}]}`;
+
+  return {
+    system,
+    user: "Generate workout plan. JSON only. No text.",
+  };
+};
+
+// ═══════════════════════════════════════════════════════════
+//  VALIDATION & ENRICHMENT
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Validate AI response structure.
+ */
+const validatePlan = (data) => {
+  if (!data || !Array.isArray(data.plan) || data.plan.length === 0) {
+    return { valid: false, reason: "Missing or empty plan array" };
+  }
+
+  for (const day of data.plan) {
+    if (!day.day || !day.focus) {
+      return { valid: false, reason: "Day missing 'day' or 'focus'" };
+    }
+    if (!Array.isArray(day.exercises) || day.exercises.length === 0) {
+      return { valid: false, reason: `${day.day}: no exercises` };
+    }
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Enrich AI plan with full exercise details from DB.
+ * Matches by exercise ID, falls back to name matching.
+ */
+const enrichPlan = (plan, idMap, nameMap) => {
+  return plan.map((day) => ({
+    day: day.day,
+    focus: day.focus,
+    exercises: day.exercises
+      .map((ex) => {
+        const dbEx = idMap.get(ex.id) || nameMap.get(ex.name?.toLowerCase());
+        if (dbEx) {
+          return {
+            id: dbEx.id,
+            name: dbEx.name,
+            target: dbEx.target,
+            equipment: dbEx.equipment,
+            gifUrl: dbEx.cloudinaryGifUrl || dbEx.gifUrl,
+            sets: ex.sets || 3,
+            reps: ex.reps || "10-12",
+          };
+        }
+        // Skip exercises not found in DB (avoid fake data)
+        return null;
+      })
+      .filter(Boolean),
+  }));
+};
+
+// ═══════════════════════════════════════════════════════════
+//  MAIN ENTRY
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Generate AI workout plan.
+ */
+export const generateWorkoutPlan = async (userId, params) => {
+  const {
+    fitness_goal,
+    target_weight,
+    target_time,
+    workout_days,
+    injuries = [],
+  } = params;
+
+  const durationDays = parseDuration(target_time);
+
+  // 1) Fetch exercises (injuries filtered out)
+  const allExercises = await fetchExercises(injuries);
+  console.log(
+    `💪 ${allExercises.length} exercises loaded (injuries excluded: ${injuries.join(", ") || "none"})`,
+  );
+
+  // 2) Sample for token efficiency
+  const sampled = sampleExercises(allExercises);
+  console.log(`📋 ${sampled.length} exercises sampled for AI`);
+
+  // 3) Build lookup maps for enrichment
+  const idMap = new Map();
+  const nameMap = new Map();
+  for (const ex of allExercises) {
+    idMap.set(ex.id, ex);
+    nameMap.set(ex.name.toLowerCase(), ex);
+  }
+
+  // 4) Build prompts
+  const compactList = toCompactList(sampled);
+  const promptParams = {
+    fitness_goal,
+    target_weight,
+    workout_days,
+    duration_days: durationDays,
+  };
+  const prompts = {
+    primary: buildPrimaryPrompt(promptParams, compactList),
+    fallback: buildFallbackPrompt(promptParams, compactList),
+  };
+
+  // 5) Call AI
+  console.log(
+    `🏋️ Generating workout plan for ${workout_days.length} days (${durationDays}-day program)...`,
+  );
+  const aiResponse = await callAI(prompts);
+
+  // 6) Validate
+  const check = validatePlan(aiResponse);
+  if (!check.valid) {
+    console.error(`❌ Validation failed: ${check.reason}`);
+    console.log(`🔄 Retrying...`);
+
+    const retryResponse = await callAI({
+      primary: prompts.fallback,
+      fallback: prompts.fallback,
+    });
+
+    const retryCheck = validatePlan(retryResponse);
+    if (!retryCheck.valid) {
+      throw new AppError(
+        `Invalid workout plan after retry: ${retryCheck.reason}`,
+        500,
+      );
+    }
+
+    retryResponse.plan = enrichPlan(retryResponse.plan, idMap, nameMap);
+    return retryResponse;
+  }
+
+  // 7) Enrich with full DB data
+  aiResponse.plan = enrichPlan(aiResponse.plan, idMap, nameMap);
+  console.log(`✅ Workout plan ready: ${aiResponse.plan.length} days`);
+
+  return aiResponse;
 };
 
 export default { generateWorkoutPlan };
