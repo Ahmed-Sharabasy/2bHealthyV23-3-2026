@@ -63,13 +63,18 @@ const globalErrorMiddleware = (err, req, res, next) => {
     });
   }
 
+  // ── Firebase errors ─────────────────────────────────
+  if (err.code === "auth/argument-error") {
+    return res.status(401).json({
+      status: "fail",
+      message: "Invalid token or Invalid token type. Please log in again.",
+    });
+  }
+
   // ── Meal-specific errors ─────────────────────────────────
 
   // Invalid meal ID format (not a valid idMeal or ObjectId)
-  if (
-    err.name === "CastError" &&
-    err.path === "idMeal"
-  ) {
+  if (err.name === "CastError" && err.path === "idMeal") {
     return res.status(400).json({
       status: "fail",
       message: `Invalid meal ID format: "${err.value}". Please provide a valid meal ID.`,
@@ -89,10 +94,7 @@ const globalErrorMiddleware = (err, req, res, next) => {
   }
 
   // Invalid nutrition filter values (NaN from parseFloat)
-  if (
-    err.name === "CastError" &&
-    (err.path || "").startsWith("nutrition.")
-  ) {
+  if (err.name === "CastError" && (err.path || "").startsWith("nutrition.")) {
     return res.status(400).json({
       status: "fail",
       message: `Invalid nutrition filter value for "${err.path}": "${err.value}". Please provide a valid number.`,
