@@ -1,4 +1,5 @@
 import authRoutes from "./authRoutes.js";
+import firebaseAuthRoutes from "./firebaseAuthRoutes.js";
 import userRoutes from "./userRoutes.js";
 import mealRoutes from "./mealRoutes.js";
 import workoutRoutes from "./workoutRoutes.js";
@@ -14,6 +15,7 @@ const API_PREFIX = "/api/v1";
 
 const mountRoutes = (app) => {
   app.use(`${API_PREFIX}/auth`, authRoutes);
+  app.use(`${API_PREFIX}/firebaseAuth`, firebaseAuthRoutes);
   app.use(`${API_PREFIX}/users`, userRoutes);
   app.use(`${API_PREFIX}/meals`, mealRoutes);
   app.use(`${API_PREFIX}/workouts`, workoutRoutes);

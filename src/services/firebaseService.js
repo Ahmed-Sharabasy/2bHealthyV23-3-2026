@@ -1,39 +1,27 @@
-// import admin from "firebase-admin";
-// import env from "../config/env.js";
+import admin from "firebase-admin";
+import AppError from "../utils/AppError.js";
 
-// // ── Initialize Firebase Admin SDK ───────────────────────────
-// let firebaseInitialized = false;
+const firebaseServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE);
 
-// const initFirebase = () => {
-//   if (firebaseInitialized) return;
+// admin.initializeApp({
+//   credential: admin.credential.cert(firebaseServiceAccount),
+// });
 
-//   try {
-//     if (
-//       env.FIREBASE_PROJECT_ID &&
-//       env.FIREBASE_CLIENT_EMAIL &&
-//       env.FIREBASE_PRIVATE_KEY
-//     ) {
-//       admin.initializeApp({
-//         credential: admin.credential.cert({
-//           projectId: env.FIREBASE_PROJECT_ID,
-//           clientEmail: env.FIREBASE_CLIENT_EMAIL,
-//           privateKey: env.FIREBASE_PRIVATE_KEY,
-//         }),
-//       });
-//       firebaseInitialized = true;
-//       console.log("✅ Firebase Admin SDK initialized");
-//     } else {
-//       console.warn(
-//         "⚠️  Firebase credentials not configured — push notifications disabled",
-//       );
-//     }
-//   } catch (error) {
-//     console.error("❌ Firebase initialization failed:", error.message);
-//   }
-// };
+// ── Initialize Firebase Admin SDK ───────────────────────────
+export const initFirebaseAdminSDK = () => {
+  if (!firebaseServiceAccount) {
+    throw new AppError("❌ Firebase initialization failed", 500);
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert(firebaseServiceAccount),
+  });
+
+  console.log("✅ Firebase Admin SDK initialized");
+};
 
 // // Initialize on module load
-// initFirebase();
+// initFirebaseAdminSDK();
 
 // /**
 //  * Send a push notification via Firebase Cloud Messaging.

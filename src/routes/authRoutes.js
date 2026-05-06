@@ -4,13 +4,13 @@ import rateLimit from "express-rate-limit";
 import * as authController from "../controllers/authController.js";
 
 // todo will removed all validators and use class based validation instead
-import {
-  //   registerValidator,
-  loginValidator,
-  verifyEmailValidator,
-  forgotPasswordValidator,
-  resetPasswordValidator,
-} from "../validators/authValidator.js";
+// import {
+//   //   registerValidator,
+//   loginValidator,
+//   verifyEmailValidator,
+//   forgotPasswordValidator,
+//   resetPasswordValidator,
+// } from "../validators/authValidator.js";
 
 import { AuthValidator } from "../validators/authValidate.js";
 import authMiddleware from "../middlewares/authMiddleware.js";

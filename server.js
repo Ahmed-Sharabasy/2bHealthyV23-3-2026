@@ -30,11 +30,7 @@ const env = {
   EMAIL_FROM: process.env.EMAIL_FROM || "noreply@healthfit.com",
 
   // Firebase
-  FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
-  FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL,
-  FIREBASE_PRIVATE_KEY: process.env.FIREBASE_PRIVATE_KEY
-    ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n")
-    : undefined,
+  FIREBASE_SERVICE: process.env.FIREBASE_SERVICE,
 
   // External APIs
   EXTERNAL_NUTRITION_API_URL: process.env.EXTERNAL_NUTRITION_API_URL,
@@ -44,7 +40,7 @@ const env = {
 };
 
 // ── Validate critical env vars ──────────────────────────────
-const requiredVars = ["MONGO_URI", "JWT_SECRET"];
+const requiredVars = ["MONGO_URI", "JWT_SECRET", "FIREBASE_SERVICE"];
 
 for (const key of requiredVars) {
   if (!env[key]) {
@@ -57,8 +53,12 @@ for (const key of requiredVars) {
 import mountRoutes from "./src/routes/index.js";
 import globalErrorMiddleware from "./src/middlewares/globalErrorMiddleware.js";
 import AppError from "./src/utils/AppError.js";
+import { initFirebaseAdminSDK } from "./src/services/firebaseService.js";
 
 const app = express();
+
+// ── Initialize Firebase Admin SDK ───────────────────────────
+initFirebaseAdminSDK();
 
 // ── Trust first proxy (Vercel) for correct client IP ────────
 app.set("trust proxy", 1);

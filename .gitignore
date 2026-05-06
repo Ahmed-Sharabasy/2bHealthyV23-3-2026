@@ -11,5 +11,7 @@ config.env
 # ignore meals_with_nutrition.json
 meals_with_nutrition.json 
 
+#ignore to-b-healthy-firebase-adminsdk-fbsvc-103ade8d6b
+to-b-healthy-firebase-adminsdk-fbsvc-103ade8d6b.json
 
 
