@@ -2,6 +2,7 @@ import admin from "firebase-admin";
 import AppError from "../utils/AppError.js";
 
 const firebaseAuthMiddleware = async (req, res, next) => {
+  console.log("token", req.headers.authorization?.split(" ")[1]);
   const token = req.headers.authorization?.split(" ")[1];
 
   if (!token) {
@@ -18,7 +19,8 @@ const firebaseAuthMiddleware = async (req, res, next) => {
   }
 
   req.user = decoded;
-  req.user._id = decoded.uid;
+  req.user.token = token;
+  req.user.uid = decoded.uid;
   console.log("req.user", req.user);
   next();
 };

@@ -8,4 +8,8 @@ router
   .route("/getUserByFcmToken")
   .get(protectFirebaseRoute, firebaseAuthController.getUserByFcmToken);
 
+router
+  .route("/createToken")
+  .post(protectFirebaseRoute, firebaseAuthController.createFirebaseToken);
+
 export default router;
