@@ -122,6 +122,7 @@ User info:
 - Goal: ${params.fitness_goal}
 - Days: ${params.workout_days.join(", ")}
 - Style: ${goalHint(params.fitness_goal)}
+- Bmi: ${params.bmi}
 
 Rules:
 - One entry per workout day
@@ -146,7 +147,7 @@ Return ONLY this JSON:
 const buildFallbackPrompt = (params, exerciseList) => {
   const system = `Create workout plan. JSON only. Use ONLY exercises from list by "id".
 Goal: ${params.fitness_goal}. Days: ${params.workout_days.join(", ")}.
-Style: ${goalHint(params.fitness_goal)}.
+Bmi: ${params.bmi}.Style: ${goalHint(params.fitness_goal)}.
 4-6 exercises/day. Assign sets and reps. Pick focus per day.
 Exercises: ${JSON.stringify(exerciseList)}
 Format: {"plan":[{"day":"Monday","focus":"chest","exercises":[{"id":"0001","sets":3,"reps":"10-12"}]}]}`;
@@ -217,7 +218,7 @@ const enrichPlan = (plan, idMap, nameMap) => {
 /**
  * Generate AI workout plan.
  */
-export const generateWorkoutPlan = async (userId, params) => {
+export const generateWorkoutPlan = async (bmi, params) => {
   const {
     fitness_goal,
     target_weight,
@@ -253,6 +254,7 @@ export const generateWorkoutPlan = async (userId, params) => {
     target_weight,
     workout_days,
     duration_days: durationDays,
+    bmi,
   };
   const prompts = {
     primary: buildPrimaryPrompt(promptParams, compactList),

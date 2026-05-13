@@ -32,7 +32,7 @@ export const getWorkoutPlan = async (req, res, next) => {
     if (injuries.length) console.log(`   Injuries: ${injuries.join(", ")}`);
 
     // Generate plan
-    const result = await generateWorkoutPlan(req.user._id, {
+    const result = await generateWorkoutPlan(req.user.bmi, {
       fitness_goal,
       target_weight,
       target_time,

@@ -1,6 +1,6 @@
 // ── AI Routes ───────────────────────────────────────────────
 import { Router } from "express";
-import authMiddleware from "../middlewares/authMiddleware.js";
+// import authMiddleware from "../middlewares/authMiddleware.js";
 import validateRequest from "../middlewares/validateRequest.js";
 import {
   validateWorkoutPlan,
@@ -8,13 +8,14 @@ import {
 } from "../validators/aiValidator.js";
 import { getWorkoutPlan } from "../controllers/aiWorkoutController.js";
 import { getMealPlan } from "../controllers/aiMealController.js";
+import firebaseAuthMiddleware from "../middlewares/firebaseAuthMiddleware.js";
 
 const router = Router();
 
 // POST /api/v1/ai/workout-plan
 router.post(
   "/workout-plan",
-  authMiddleware,
+  firebaseAuthMiddleware,
   validateWorkoutPlan,
   validateRequest,
   getWorkoutPlan,
@@ -23,7 +24,7 @@ router.post(
 // POST /api/v1/ai/meal-plan
 router.post(
   "/meal-plan",
-  authMiddleware,
+  firebaseAuthMiddleware,
   validateMealPlan,
   validateRequest,
   getMealPlan,

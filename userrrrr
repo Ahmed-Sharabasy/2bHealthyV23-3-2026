@@ -1,0 +1,14 @@
+req.user {
+  iss: 'https://securetoken.google.com/to-b-healthy',
+  aud: 'to-b-healthy',
+  auth_time: 1778484260,
+  user_id: '3e9Wg6tLqZQKYWsSj7kdkwyBi6h1',
+  sub: '3e9Wg6tLqZQKYWsSj7kdkwyBi6h1',
+  iat: 1778686729,
+  exp: 1778690329,
+  email: 'os@gmail.com',
+  email_verified: false,
+  firebase: { identities: { email: [Array] }, sign_in_provider: 'password' },
+  uid: '3e9Wg6tLqZQKYWsSj7kdkwyBi6h1',
+  token: 'eyJhbGciOiJSUzI1NiIsImtpZCI6Ijg2OGU0YWNlMGI2NTE2ZDM2YjlmNTZkZThjZTQ5Nzg4ZmNjZGFjNDMiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vdG8tYi1oZWFsdGh5IiwiYXVkIjoidG8tYi1oZWFsdGh5IiwiYXV0aF90aW1lIjoxNzc4NDg0MjYwLCJ1c2VyX2lkIjoiM2U5V2c2dExxWlFLWVdzU2o3a2Rrd3lCaTZoMSIsInN1YiI6IjNlOVdnNnRMcVpRS1lXc1NqN2tka3d5Qmk2aDEiLCJpYXQiOjE3Nzg2ODY3MjksImV4cCI6MTc3ODY5MDMyOSwiZW1haWwiOiJvc0BnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsImZpcmViYXNlIjp7ImlkZW50aXRpZXMiOnsiZW1haWwiOlsib3NAZ21haWwuY29tIl19LCJzaWduX2luX3Byb3ZpZGVyIjoicGFzc3dvcmQifX0.MpKTa5WvJmJHEljnyzomcwg_VwJ79Sui9cF4R7HtQ_RUR1DqEPCjhOoEFYe5JX5vNW2uEkMNdEqT-O9I6JxBKp8FZgQzB1E5wy0RRdF6piIxeRACTxrl3j6vDHUqQnpG0VSF0RXSUEtcPJotkxmbQnJDqqmSIdWSNvTNiHSW4qdP9HRW3NW2SV8R6w03OtABPvEECQzz6wpvlLYxla07lgQp1fK4FXFUXA-bIXl11RCmRRzLGuuQvslWifE-qBctVTGZ3PL_2Zi8Le0wAdtHoY1woRLEUVdTIFxElBkmsF5C09aVUTPTDoYVlwHUqaBA_LEsOXaKbWy7XGUNLqF4ig'
+}

@@ -18,9 +18,17 @@ const firebaseAuthMiddleware = async (req, res, next) => {
     return next(new AppError(error.message, 401));
   }
 
-  req.user = decoded;
-  req.user.token = token;
-  req.user.uid = decoded.uid;
+  const userRef = admin.firestore().collection("users").doc(decoded.user_id);
+  const doc = await userRef.get();
+
+  if (!doc.exists) {
+    return next(new AppError("User not found", 404));
+  }
+
+  req.decodedUser = decoded;
+  req.decodedUser.token = token;
+  req.user = doc.data();
+
   console.log("req.user", req.user);
   next();
 };
