@@ -81,6 +81,7 @@ Create a 7-day meal plan using ONLY the provided meals.
 User:
 Goal: ${params.fitness_goal}
 Target weight: ${params.target_weight} kg
+BMI : ${params.bmi}
 
 Rules:
 - Generate exactly 7 days
@@ -104,7 +105,7 @@ Return ONLY valid JSON, no explanation:
 
 const buildFallbackPrompt = (params, mealsList) => {
   const system = `Create a 7-day meal plan using ONLY these meals.
-Goal: ${params.fitness_goal}, Target: ${params.target_weight} kg.
+Goal: ${params.fitness_goal}, Target: ${params.target_weight} kg, BMI : ${params.bmi}.
 Rules: 7 days, breakfast/lunch/dinner from list ONLY, snacks can be simple names.
 Use exact idMeal, name, image, nutrition from list.
 Meals: ${JSON.stringify(mealsList)}
@@ -171,7 +172,7 @@ const validatePlan = (data) => {
 /**
  * Generate AI meal plan.
  */
-export const generateMealPlan = async (params) => {
+export const generateMealPlan = async (bmi, params) => {
   const {
     fitness_goal,
     target_weight,
@@ -188,7 +189,7 @@ export const generateMealPlan = async (params) => {
   );
 
   // 2) Build prompts (AI generates 7 days, we expand to totalDays)
-  const promptParams = { fitness_goal, target_weight };
+  const promptParams = { bmi, fitness_goal, target_weight };
   const prompts = {
     primary: buildPrimaryPrompt(promptParams, meals),
     fallback: buildFallbackPrompt(promptParams, meals),

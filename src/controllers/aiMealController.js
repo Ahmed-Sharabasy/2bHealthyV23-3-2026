@@ -15,8 +15,12 @@ export const getMealPlan = async (req, res, next) => {
   const start = Date.now();
 
   try {
-    const { fitness_goal, target_weight, target_time, excluded_foods = [] } =
-      req.body;
+    const {
+      fitness_goal,
+      target_weight,
+      target_time,
+      excluded_foods = [],
+    } = req.body;
 
     console.log(`\n🍽️ ═══ Meal Plan Request ═══`);
     console.log(
@@ -26,7 +30,7 @@ export const getMealPlan = async (req, res, next) => {
       console.log(`   Excluded: ${excluded_foods.join(", ")}`);
 
     // Generate plan
-    const result = await generateMealPlan({
+    const result = await generateMealPlan(req.user.bmi, {
       fitness_goal,
       target_weight,
       target_time,
@@ -39,7 +43,9 @@ export const getMealPlan = async (req, res, next) => {
     }
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    console.log(`✅ Meal plan ready: ${result.plan.length} days in ${elapsed}s`);
+    console.log(
+      `✅ Meal plan ready: ${result.plan.length} days in ${elapsed}s`,
+    );
 
     res.status(200).json({
       status: "success",
