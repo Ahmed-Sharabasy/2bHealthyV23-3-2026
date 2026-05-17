@@ -6,6 +6,9 @@ import AppError from "../utils/AppError.js";
 // Max meals to send to AI (keeps prompt small for free models)
 const MAX_MEALS_FOR_AI = 60;
 
+// Fields to fetch from DB for enrichment lookup
+const MEAL_LOOKUP_FIELDS = "idMeal strMeal strCategory strMealThumb nutrition";
+
 // ═══════════════════════════════════════════════════════════
 //  DATABASE
 // ═══════════════════════════════════════════════════════════
@@ -37,17 +40,27 @@ const fetchAndPrepareMeals = async (excludedCategories = []) => {
   // Limit to keep prompt small
   const sampled = meals.slice(0, MAX_MEALS_FOR_AI);
 
+  // return sampled.map((m) => ({
+  //   idMeal: m.idMeal,
+  //   name: m.strMeal,
+  //   category: m.strCategory,
+  //   nutrition: {
+  //     calories: Math.round(m.nutrition?.calories ?? 0),
+  //     protein: Math.round(m.nutrition?.protein ?? 0),
+  //     carbs: Math.round(m.nutrition?.carbs ?? 0),
+  //     fat: Math.round(m.nutrition?.fat ?? 0),
+  //   },
+  // }));
+
+  // For AI model that take less tokens
   return sampled.map((m) => ({
-    idMeal: m.idMeal,
-    name: m.strMeal,
-    category: m.strCategory,
-    image: m.strMealThumb || "",
-    nutrition: {
-      calories: Math.round(m.nutrition?.calories ?? 0),
-      protein: Math.round(m.nutrition?.protein ?? 0),
-      carbs: Math.round(m.nutrition?.carbs ?? 0),
-      fat: Math.round(m.nutrition?.fat ?? 0),
-    },
+    id: m.idMeal,
+    n: m.strMeal,
+    c: m.strCategory,
+    calories: Math.round(m.nutrition?.calories ?? 0),
+    protein: Math.round(m.nutrition?.protein ?? 0),
+    carbs: Math.round(m.nutrition?.carbs ?? 0),
+    fat: Math.round(m.nutrition?.fat ?? 0),
   }));
 };
 
@@ -166,6 +179,87 @@ const validatePlan = (data) => {
 };
 
 // ═══════════════════════════════════════════════════════════
+//  ENRICHMENT
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Look up a single AI meal object against DB maps.
+ * Returns enriched meal or null if not found.
+ */
+const matchMeal = (meal, mealType, idMap, nameMap) => {
+  if (!meal) return null;
+
+  const dbMeal =
+    idMap.get(meal.idMeal) ||
+    idMap.get(meal.id) ||
+    nameMap.get(meal.name?.toLowerCase());
+
+  if (!dbMeal) return null;
+
+  return {
+    _id: dbMeal._id,
+    idMeal: dbMeal.idMeal,
+    strMeal: dbMeal.strMeal,
+    strMealAlternate: dbMeal.strMealAlternate,
+    strCategory: dbMeal.strCategory,
+    strArea: dbMeal.strArea,
+    strInstructions: dbMeal.strInstructions,
+    strMealThumb: dbMeal.strMealThumb,
+    strTags: dbMeal.strTags,
+    strYoutube: dbMeal.strYoutube,
+    strSource: dbMeal.strSource,
+    strImageSource: dbMeal.strImageSource,
+    strCreativeCommonsConfirmed: dbMeal.strCreativeCommonsConfirmed,
+    ingredients: dbMeal.ingredients,
+    nutrition: dbMeal.nutrition,
+
+    mealType,
+    servings: meal.servings || 1,
+  };
+};
+
+/**
+ * Enrich AI meal plan with full DB data.
+ *
+ * The AI returns meals as an OBJECT: { breakfast, lunch, dinner, snacks }
+ * This function converts each slot into a validated, enriched meal.
+ * Fake / unmatched meals are filtered out.
+ *
+ * @param {Array} plan    - AI plan array [{day, meals:{breakfast,lunch,dinner,snacks}}]
+ * @param {Map}   idMap   - Map<idMeal, dbMealDoc>
+ * @param {Map}   nameMap - Map<lowerCaseName, dbMealDoc>
+ * @returns {Array} Enriched plan with validated meals array per day
+ */
+const enrichMealPlan = (plan, idMap, nameMap) => {
+  const MAIN_SLOTS = ["breakfast", "lunch", "dinner"];
+
+  return plan.map((day) => {
+    const enrichedMeals = [];
+
+    // Handle main meal slots (each is a single object)
+    for (const slot of MAIN_SLOTS) {
+      const meal = day.meals?.[slot];
+      const enriched = matchMeal(meal, slot, idMap, nameMap);
+      if (enriched) enrichedMeals.push(enriched);
+    }
+
+    // Handle snacks (array of objects, may not exist in DB)
+    const snacks = day.meals?.snacks;
+    if (Array.isArray(snacks)) {
+      for (const snack of snacks) {
+        const enriched = matchMeal(snack, "snack", idMap, nameMap);
+        if (enriched) enrichedMeals.push(enriched);
+      }
+    }
+
+    return {
+      day: day.day,
+      meals: enrichedMeals,
+    };
+  });
+};
+
+// ═══════════════════════════════════════════════════════════
 //  MAIN ENTRY
 // ═══════════════════════════════════════════════════════════
 
@@ -182,26 +276,44 @@ export const generateMealPlan = async (bmi, params) => {
 
   const totalDays = parseDuration(target_time);
 
-  // 1) Fetch meals
+  // 1) Fetch meals for AI prompt
   const meals = await fetchAndPrepareMeals(excluded_foods);
   console.log(
     `📦 ${meals.length} meals loaded (excluded: ${excluded_foods.join(", ") || "none"})`,
   );
 
-  // 2) Build prompts (AI generates 7 days, we expand to totalDays)
+  // 2) Build lookup maps for enrichment (use full DB docs)
+  const filter = {};
+  if (excluded_foods.length > 0) {
+    filter.strCategory = { $nin: excluded_foods };
+  }
+  // const allDbMeals = await Meal.find(filter).select(MEAL_LOOKUP_FIELDS).lean();
+  const allDbMeals = await Meal.find(filter).lean();
+
+  const idMap = new Map();
+  const nameMap = new Map();
+  for (const m of allDbMeals) {
+    idMap.set(m.idMeal, m);
+    nameMap.set(m.strMeal.toLowerCase(), m);
+  }
+  console.log(
+    `🗂️  Lookup maps built: ${idMap.size} by ID, ${nameMap.size} by name`,
+  );
+
+  // 3) Build prompts (AI generates 7 days, we expand to totalDays)
   const promptParams = { bmi, fitness_goal, target_weight };
   const prompts = {
     primary: buildPrimaryPrompt(promptParams, meals),
     fallback: buildFallbackPrompt(promptParams, meals),
   };
 
-  // 3) Call AI
+  // 4) Call AI
   console.log(
     `🍽️ Generating 7-day base plan (will expand to ${totalDays} days)...`,
   );
   const aiResponse = await callAI(prompts);
 
-  // 4) Validate
+  // 5) Validate
   const check = validatePlan(aiResponse);
   if (!check.valid) {
     console.error(`❌ Validation failed: ${check.reason}`);
@@ -221,12 +333,16 @@ export const generateMealPlan = async (bmi, params) => {
     }
 
     retryResponse.plan = expandPlan(retryResponse.plan, totalDays);
+    retryResponse.plan = enrichMealPlan(retryResponse.plan, idMap, nameMap);
     return retryResponse;
   }
 
-  // 5) Expand 7-day plan to full duration
+  // 6) Expand 7-day plan to full duration
   aiResponse.plan = expandPlan(aiResponse.plan, totalDays);
-  console.log(`✅ Expanded to ${aiResponse.plan.length} days`);
+
+  // 7) Enrich with full DB data (filter out fake AI meals)
+  aiResponse.plan = enrichMealPlan(aiResponse.plan, idMap, nameMap);
+  console.log(`✅ Expanded & enriched: ${aiResponse.plan.length} days`);
 
   return aiResponse;
 };

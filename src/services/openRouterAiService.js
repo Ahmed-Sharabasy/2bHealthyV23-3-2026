@@ -74,7 +74,8 @@ const sendRequest = async (model, systemPrompt, userMessage, temperature) => {
           { role: "user", content: userMessage },
         ],
         temperature,
-        max_tokens: 16384,
+        // max_tokens: 16384,
+        max_tokens: 7839,
       }),
     });
 
