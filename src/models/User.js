@@ -59,6 +59,10 @@ const userSchema = new mongoose.Schema(
       default: false,
     },
     // ── User profile fields ───────────────────────────────
+    bmi: {
+      type: Number,
+      default: 2.5,
+    },
     heightCm: {
       type: Number,
       min: [50, "Height must be at least 50 cm"],

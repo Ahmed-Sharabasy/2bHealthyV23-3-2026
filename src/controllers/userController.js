@@ -78,6 +78,7 @@ export const getProfile = async (req, res, next) => {
       activityLevel
       goalType
       targetWeight
+      bmi
     `);
 
   if (!profile) {
@@ -96,8 +97,15 @@ export const getProfile = async (req, res, next) => {
 //TODO // 3/3/2026 UPDATE PROFILE  Done // height, weight, body fat, activity level, goal type, target weight
 // ═════════════════════════════════════════════════════════════
 export const updateProfile = async (req, res, next) => {
-  const { heightCm, weightKg, bodyFat, activityLevel, goalType, targetWeight } =
-    req.body;
+  const {
+    heightCm,
+    weightKg,
+    bodyFat,
+    activityLevel,
+    goalType,
+    targetWeight,
+    bmi,
+  } = req.body;
 
   const updateData = {};
   if (heightCm !== undefined) updateData.heightCm = heightCm;
@@ -105,6 +113,7 @@ export const updateProfile = async (req, res, next) => {
   if (bodyFat !== undefined) updateData.bodyFat = bodyFat;
   if (activityLevel !== undefined) updateData.activityLevel = activityLevel;
   if (targetWeight !== undefined) updateData.targetWeight = targetWeight;
+  if (bmi !== undefined) updateData.bmi = bmi;
 
   // ── Goal Change Flow ──────────────────────────────────
   if (goalType !== undefined) {

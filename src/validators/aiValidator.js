@@ -9,9 +9,15 @@ export const validateWorkoutPlan = [
     .trim()
     .notEmpty()
     .withMessage("fitness_goal is required")
-    .isIn(["fat_loss", "muscle_gain", "weight_gain", "weight_loss", "maintenance"])
+    .isIn([
+      "fat_loss",
+      "muscle_gain",
+      "weight_gain",
+      "weight_loss",
+      "maintenance",
+    ])
     .withMessage(
-      "fitness_goal must be one of: fat_loss, muscle_gain, weight_gain, weight_loss, maintenance"
+      "fitness_goal must be one of: fat_loss, muscle_gain, weight_gain, weight_loss, maintenance",
     ),
 
   body("target_weight")
@@ -55,8 +61,10 @@ export const validateMealPlan = [
     .trim()
     .notEmpty()
     .withMessage("fitness_goal is required")
-    .isIn(["fat_loss", "weight_gain"])
-    .withMessage("fitness_goal must be one of: fat_loss, weight_gain"),
+    .isIn(["fat_loss", "maintenance", "weight_gain"])
+    .withMessage(
+      "fitness_goal must be one of: fat_loss, maintenance, weight_gain",
+    ),
 
   body("target_weight")
     .notEmpty()
@@ -80,12 +88,20 @@ export const validateMealPlan = [
     .trim()
     .notEmpty()
     .isIn([
-      "Chicken", "Beef", "Lamb", "Pork", "Goat",
-      "Pasta", "Seafood", "Vegetarian", "Vegan",
-      "Miscellaneous", "Side",
+      "Chicken",
+      "Beef",
+      "Lamb",
+      "Pork",
+      "Goat",
+      "Pasta",
+      "Seafood",
+      "Vegetarian",
+      "Vegan",
+      "Miscellaneous",
+      "Side",
     ])
     .withMessage(
-      "Each excluded food must be a valid category: Chicken, Beef, Lamb, Pork, Goat, Pasta, Seafood, Vegetarian, Vegan, Miscellaneous, Side"
+      "Each excluded food must be a valid category: Chicken, Beef, Lamb, Pork, Goat, Pasta, Seafood, Vegetarian, Vegan, Miscellaneous, Side",
     ),
 ];
 

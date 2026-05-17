@@ -179,14 +179,39 @@ const validatePlan = (data) => {
 };
 
 // ═══════════════════════════════════════════════════════════
+//  NUTRITION SCALING
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Get a multiplier to scale per-100g DB nutrition to realistic serving sizes.
+ * Adjusts total daily intake based on user's fitness goal.
+ */
+const getNutritionFactor = (goal) => {
+  switch (goal) {
+    case "weight_gain":
+      return 4;
+
+    case "maintenance":
+      return 3;
+
+    case "fat_loss":
+      return 2.5;
+
+    default:
+      return 2.8;
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
 //  ENRICHMENT
 // ═══════════════════════════════════════════════════════════
 
 /**
  * Look up a single AI meal object against DB maps.
+ * Scales nutrition by the given factor to produce realistic serving values.
  * Returns enriched meal or null if not found.
  */
-const matchMeal = (meal, mealType, idMap, nameMap) => {
+const matchMeal = (meal, mealType, idMap, nameMap, factor) => {
   if (!meal) return null;
 
   const dbMeal =
@@ -195,6 +220,14 @@ const matchMeal = (meal, mealType, idMap, nameMap) => {
     nameMap.get(meal.name?.toLowerCase());
 
   if (!dbMeal) return null;
+
+  // Scale per-100g nutrition to realistic serving size
+  const scaledNutrition = {
+    calories: Math.round((dbMeal.nutrition?.calories || 0) * factor),
+    protein: Math.round((dbMeal.nutrition?.protein || 0) * factor),
+    carbs: Math.round((dbMeal.nutrition?.carbs || 0) * factor),
+    fats: Math.round((dbMeal.nutrition?.fat || 0) * factor),
+  };
 
   return {
     _id: dbMeal._id,
@@ -211,7 +244,7 @@ const matchMeal = (meal, mealType, idMap, nameMap) => {
     strImageSource: dbMeal.strImageSource,
     strCreativeCommonsConfirmed: dbMeal.strCreativeCommonsConfirmed,
     ingredients: dbMeal.ingredients,
-    nutrition: dbMeal.nutrition,
+    nutrition: scaledNutrition,
 
     mealType,
     servings: meal.servings || 1,
@@ -219,19 +252,23 @@ const matchMeal = (meal, mealType, idMap, nameMap) => {
 };
 
 /**
- * Enrich AI meal plan with full DB data.
+ * Enrich AI meal plan with full DB data and scaled nutrition.
  *
  * The AI returns meals as an OBJECT: { breakfast, lunch, dinner, snacks }
  * This function converts each slot into a validated, enriched meal.
  * Fake / unmatched meals are filtered out.
  *
- * @param {Array} plan    - AI plan array [{day, meals:{breakfast,lunch,dinner,snacks}}]
- * @param {Map}   idMap   - Map<idMeal, dbMealDoc>
- * @param {Map}   nameMap - Map<lowerCaseName, dbMealDoc>
+ * @param {Array}  plan       - AI plan array [{day, meals:{breakfast,lunch,dinner,snacks}}]
+ * @param {Map}    idMap      - Map<idMeal, dbMealDoc>
+ * @param {Map}    nameMap    - Map<lowerCaseName, dbMealDoc>
+ * @param {string} fitnessGoal - User's fitness goal for nutrition scaling
  * @returns {Array} Enriched plan with validated meals array per day
  */
-const enrichMealPlan = (plan, idMap, nameMap) => {
+const enrichMealPlan = (plan, idMap, nameMap, fitnessGoal) => {
   const MAIN_SLOTS = ["breakfast", "lunch", "dinner"];
+  const factor = getNutritionFactor(fitnessGoal);
+
+  console.log(`⚖️  Nutrition factor: ${factor}x (goal: ${fitnessGoal})`);
 
   return plan.map((day) => {
     const enrichedMeals = [];
@@ -239,7 +276,7 @@ const enrichMealPlan = (plan, idMap, nameMap) => {
     // Handle main meal slots (each is a single object)
     for (const slot of MAIN_SLOTS) {
       const meal = day.meals?.[slot];
-      const enriched = matchMeal(meal, slot, idMap, nameMap);
+      const enriched = matchMeal(meal, slot, idMap, nameMap, factor);
       if (enriched) enrichedMeals.push(enriched);
     }
 
@@ -247,7 +284,7 @@ const enrichMealPlan = (plan, idMap, nameMap) => {
     const snacks = day.meals?.snacks;
     if (Array.isArray(snacks)) {
       for (const snack of snacks) {
-        const enriched = matchMeal(snack, "snack", idMap, nameMap);
+        const enriched = matchMeal(snack, "snack", idMap, nameMap, factor);
         if (enriched) enrichedMeals.push(enriched);
       }
     }
@@ -333,7 +370,12 @@ export const generateMealPlan = async (bmi, params) => {
     }
 
     retryResponse.plan = expandPlan(retryResponse.plan, totalDays);
-    retryResponse.plan = enrichMealPlan(retryResponse.plan, idMap, nameMap);
+    retryResponse.plan = enrichMealPlan(
+      retryResponse.plan,
+      idMap,
+      nameMap,
+      fitness_goal,
+    );
     return retryResponse;
   }
 
@@ -341,7 +383,12 @@ export const generateMealPlan = async (bmi, params) => {
   aiResponse.plan = expandPlan(aiResponse.plan, totalDays);
 
   // 7) Enrich with full DB data (filter out fake AI meals)
-  aiResponse.plan = enrichMealPlan(aiResponse.plan, idMap, nameMap);
+  aiResponse.plan = enrichMealPlan(
+    aiResponse.plan,
+    idMap,
+    nameMap,
+    fitness_goal,
+  );
   console.log(`✅ Expanded & enriched: ${aiResponse.plan.length} days`);
 
   return aiResponse;
