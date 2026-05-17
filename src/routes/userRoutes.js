@@ -1,14 +1,10 @@
 import { Router } from "express";
 // import userController from "../controllers/userController.js";
 import * as userController from "../controllers/userController.js";
-// import {
-//   updateProfileValidator,
-//   logProgressValidator,
-// } from "../validators/userValidator.js";
 import authMiddleware from "../middlewares/authMiddleware.js";
 import validateRequest from "../middlewares/validateRequest.js";
 
-import { UserValidator } from "../validators/userValidate.js";
+import { UserValidator } from "../validators/userValidator.js";
 
 import * as photoUploadMiddleware from "../middlewares/multerConfig.js";
 
@@ -38,19 +34,5 @@ router
     photoUploadMiddleware.resizeUserPhoto,
     userController.uploadUserAvatar,
   );
-
-// router.put(
-//   "/profile",
-//   updateProfileValidator,
-//   validateRequest,
-//   userController.updateProfile,
-// );
-// router.post(
-//   "/progress",
-//   logProgressValidator,
-//   validateRequest,
-//   userController.logProgress,
-// );
-// router.get("/progress", userController.getProgressLogs);
 
 export default router;
